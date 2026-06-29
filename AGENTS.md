@@ -23,6 +23,7 @@ python gui.py                  # GUI con input de ticket + foto + log
 - `gui.py`: interfaz grafica con campo ticket + Buscar, panel Resultado con boton Copiar por campo
 - Validacion digito verificador RUT chileno (`✓`/`✗`)
 - Foto desde S3 con navegacion Anterior/Siguiente si hay varias
-- Checkbox para ocultar/mostrar Log, oculto por defecto
+- Checkbox para ocultar/mostrar Log, oculto por defecto (agrupado en LabelFrame para no tapar el checkbox)
 - Click derecho > Pegar en campo ticket
+- Redimension correcta de componentes (rowconfigure/columnconfigure)
 - Push a `github.com/Arnaldolandin/integro-rut-bot`
