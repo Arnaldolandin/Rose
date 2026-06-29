@@ -27,5 +27,5 @@ python gui.py                  # GUI con input de ticket + foto + log
 - Click derecho > Pegar en campo ticket
 - Redimension correcta de componentes (rowconfigure/columnconfigure)
 - Copiar RUT sin puntos ni guion (solo numeros+digito verificador)
-- `.exe` standalone con PyInstaller (`dist/integro-bot.exe`, ~37 MB, no requiere Python)
+- `.exe` standalone con PyInstaller (`dist/Rose.exe`, ~37 MB, no requiere Python)
 - Push a `github.com/Arnaldolandin/integro-rut-bot`
