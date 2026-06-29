@@ -69,6 +69,7 @@ class App(tk.Tk):
         main.pack(fill=tk.BOTH, expand=True)
         main.columnconfigure(0, weight=1)
         main.columnconfigure(1, weight=1)
+        main.rowconfigure(1, weight=1)
         main.rowconfigure(2, weight=1)
 
         # -- Top: ticket input (row 0, colspan 2) --
@@ -127,9 +128,10 @@ class App(tk.Tk):
         img_frame = ttk.LabelFrame(main, text="Foto", padding=8)
         img_frame.grid(row=1, column=1, sticky=tk.NSEW, pady=(0, 8))
         img_frame.columnconfigure(0, weight=1)
+        img_frame.rowconfigure(0, weight=1)
 
         self.img_label = ttk.Label(img_frame, text="(sin imagen)")
-        self.img_label.grid(row=0, column=0, columnspan=2, pady=(0, 6))
+        self.img_label.grid(row=0, column=0, columnspan=2, sticky=tk.NSEW, pady=(0, 6))
 
         nav = ttk.Frame(img_frame)
         nav.grid(row=1, column=0, columnspan=2)
