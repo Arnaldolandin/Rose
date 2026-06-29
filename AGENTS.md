@@ -1,4 +1,4 @@
-# integro-rut-bot — tag-admin.integrocorp.cl
+# Rose — tag-admin.integrocorp.cl
 
 Bot que extrae RUT, patente y nombre completo desde PDFs de un desk en tag-admin.integrocorp.cl (Laravel Sanctum + Next.js).
 
