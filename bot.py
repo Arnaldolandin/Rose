@@ -441,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Patente:    {all_pats[0] if all_pats else '(no encontrado)'}")
     if ticket:
         print(f"  Email:      {ticket.get('email','') or '(sin email)'}")
-        print(f"  Solicitud:  #{desk}")
+        print(f"  Solicitud:  {desk}")
     return 0
 
 
