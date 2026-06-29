@@ -3,8 +3,10 @@ import threading
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, scrolledtext
+import io
 
 import requests
+from PIL import Image, ImageTk
 
 from bot import (
     sanctum_login,
@@ -20,6 +22,7 @@ from bot import (
 )
 
 OUT_DIR = Path("./pdfs")
+MAX_IMG_W, MAX_IMG_H = 500, 500
 
 logging.getLogger().setLevel(logging.DEBUG)
 log.handlers.clear()
@@ -45,7 +48,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Integro RUT Bot")
-        self.geometry("700x600")
+        self.geometry("950x650")
         self.resizable(True, True)
 
         self.session: requests.Session | None = None
@@ -61,10 +64,13 @@ class App(tk.Tk):
     def _build_ui(self):
         main = ttk.Frame(self, padding=12)
         main.pack(fill=tk.BOTH, expand=True)
+        main.columnconfigure(0, weight=1)
+        main.columnconfigure(1, weight=1)
+        main.rowconfigure(2, weight=1)
 
-        # -- Top: ticket input --
+        # -- Top: ticket input (row 0, colspan 2) --
         top = ttk.Frame(main)
-        top.pack(fill=tk.X, pady=(0, 8))
+        top.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
 
         ttk.Label(top, text="Ticket:").pack(side=tk.LEFT)
         self.ticket_var = tk.StringVar()
@@ -76,14 +82,14 @@ class App(tk.Tk):
         self.ticket_entry.focus()
 
         self.buscar_btn = ttk.Button(
-            top, text="Buscar", command=self._buscar, style="Accent.TButton"
+            top, text="Buscar", command=self._buscar
         )
         self.buscar_btn.pack(side=tk.LEFT)
 
-        # -- Results --
+        # -- Left: results (row 1, col 0) --
         self.result_vars: dict[str, tk.StringVar] = {}
         results_frame = ttk.LabelFrame(main, text="Resultado", padding=8)
-        results_frame.pack(fill=tk.X, pady=(0, 8))
+        results_frame.grid(row=1, column=0, sticky=tk.NSEW, padx=(0, 6), pady=(0, 8))
 
         fields = [
             ("Nombre:", "nombre"),
@@ -105,11 +111,18 @@ class App(tk.Tk):
                 foreground="#2b2b2b",
             ).pack(side=tk.LEFT, padx=6)
 
-        # -- Status / Log --
-        ttk.Label(main, text="Log:").pack(anchor=tk.W)
+        # -- Right: image preview (row 1, col 1) --
+        img_frame = ttk.LabelFrame(main, text="Foto", padding=8)
+        img_frame.grid(row=1, column=1, sticky=tk.NSEW, pady=(0, 8))
+
+        self.img_label = ttk.Label(img_frame, text="(sin imagen)")
+        self.img_label.pack(fill=tk.BOTH, expand=True)
+
+        # -- Log (row 2, colspan 2) --
+        ttk.Label(main, text="Log:").grid(row=2, column=0, columnspan=2, sticky=tk.W)
         self.log_area = scrolledtext.ScrolledText(
             main,
-            height=14,
+            height=12,
             font=("Consolas", 9),
             state="disabled",
             wrap=tk.WORD,
@@ -117,7 +130,8 @@ class App(tk.Tk):
             fg="#d4d4d4",
             insertbackground="white",
         )
-        self.log_area.pack(fill=tk.BOTH, expand=True)
+        self.log_area.grid(row=3, column=0, columnspan=2, sticky=tk.NSEW)
+        main.rowconfigure(3, weight=1)
 
         # Log handler
         handler = TextHandler(self.log_area)
@@ -143,11 +157,7 @@ class App(tk.Tk):
 
     def _do_login(self):
         try:
-            cfg = {
-                "user": None,
-                "password": None,
-                "desk": None,
-            }
+            cfg = {"user": None, "password": None}
             cfg_path = Path("./config.json")
             if cfg_path.exists():
                 import json
@@ -191,12 +201,45 @@ class App(tk.Tk):
             log.warning("Ticket debe ser numerico: %s", raw)
             return
         self._limpiar_resultados()
+        self._limpiar_imagen()
         self._set_busy(True)
         threading.Thread(target=self._do_buscar, args=(desk,), daemon=True).start()
 
     def _limpiar_resultados(self):
         for var in self.result_vars.values():
             var.set("—")
+
+    def _limpiar_imagen(self):
+        self.img_label.configure(image="", text="(cargando...)")
+
+    # ------------------------------------------------------------------
+    # Descargar y mostrar imagen
+    # ------------------------------------------------------------------
+
+    def _mostrar_imagen(self, url: str):
+        try:
+            r = self.session.get(url, timeout=30)
+            r.raise_for_status()
+            img_data = io.BytesIO(r.content)
+            pil_img = Image.open(img_data)
+
+            # Redimensionar manteniendo aspect ratio
+            w, h = pil_img.size
+            scale = min(MAX_IMG_W / w, MAX_IMG_H / h, 1.0)
+            if scale < 1.0:
+                pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+            self._tk_img = ImageTk.PhotoImage(pil_img)
+            self.after(0, self._set_imagen, self._tk_img)
+        except Exception as e:
+            log.warning("Error al cargar imagen: %s", e)
+            self.after(0, self._set_imagen_error)
+
+    def _set_imagen(self, photo):
+        self.img_label.configure(image=photo, text="")
+
+    def _set_imagen_error(self):
+        self.img_label.configure(image="", text="(error al cargar imagen)")
 
     def _do_buscar(self, desk: int):
         try:
@@ -210,6 +253,7 @@ class App(tk.Tk):
             ticket = parse_ticket(rsc)
             files = extract_file_urls(rsc)
             pdfs = [f for f in files if f["tipo"] == "pdf"]
+            imgs = [f for f in files if f["tipo"] == "img"]
 
             # Mostrar datos del ticket en UI
             nombre = (ticket or {}).get("fullName", "")
@@ -227,31 +271,38 @@ class App(tk.Tk):
             if email:
                 self.after(0, self.result_vars["email"].set, email)
 
-            if not pdfs:
-                log.warning("Ticket %s no tiene PDFs adjuntos", desk)
-                self.after(0, self._set_busy, False)
-                return
+            # Descargar imagen(es)
+            if imgs:
+                log.info("Descargando %s imagen(es)...", len(imgs))
+                self.after(0, self._limpiar_imagen)
+                for img_file in imgs:
+                    self._mostrar_imagen(img_file["url"])
+            else:
+                self.after(0, self._set_imagen_error)
+                log.info("Ticket sin imagenes adjuntas.")
 
             # Descargar PDFs y extraer
-            self.after(0, log.info, f"Descargando {len(pdfs)} PDF(s)...")
-            OUT_DIR.mkdir(parents=True, exist_ok=True)
-
-            for i, file in enumerate(pdfs, 1):
-                p = download_pdf(self.session, file["url"], OUT_DIR, i)
-                if not p:
-                    continue
-                text = extract_text(p)
-                if not text:
-                    continue
-                nombres = find_nombres(text)
-                if nombres:
-                    self.after(0, self.result_vars["nombre"].set, nombres[0])
-                ruts = find_ruts(text)
-                if ruts:
-                    self.after(0, self.result_vars["rut"].set, ruts[0])
-                patentes = find_patentes(text)
-                if patentes:
-                    self.after(0, self.result_vars["patente"].set, patentes[0])
+            if pdfs:
+                OUT_DIR.mkdir(parents=True, exist_ok=True)
+                log.info("Descargando %s PDF(s)...", len(pdfs))
+                for i, file in enumerate(pdfs, 1):
+                    p = download_pdf(self.session, file["url"], OUT_DIR, i)
+                    if not p:
+                        continue
+                    text = extract_text(p)
+                    if not text:
+                        continue
+                    nombres = find_nombres(text)
+                    if nombres:
+                        self.after(0, self.result_vars["nombre"].set, nombres[0])
+                    ruts = find_ruts(text)
+                    if ruts:
+                        self.after(0, self.result_vars["rut"].set, ruts[0])
+                    patentes = find_patentes(text)
+                    if patentes:
+                        self.after(0, self.result_vars["patente"].set, patentes[0])
+            else:
+                log.info("Ticket sin PDFs adjuntos.")
 
             log.info("Listo.")
 
