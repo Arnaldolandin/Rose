@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 pdfs/
 .env
+dist/
+build/
+*.spec
