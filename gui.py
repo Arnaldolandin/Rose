@@ -140,7 +140,7 @@ class App(tk.Tk):
         self._main = main
         log_header = ttk.Frame(main)
         log_header.grid(row=2, column=0, columnspan=2, sticky=tk.W)
-        self._log_visible = tk.BooleanVar(value=True)
+        self._log_visible = tk.BooleanVar(value=False)
         ttk.Checkbutton(log_header, text="Log", variable=self._log_visible,
                         command=self._toggle_log).pack(side=tk.LEFT)
         self.log_area = scrolledtext.ScrolledText(
@@ -154,7 +154,8 @@ class App(tk.Tk):
             insertbackground="white",
         )
         self.log_area.grid(row=3, column=0, columnspan=2, sticky=tk.NSEW)
-        main.rowconfigure(3, weight=1)
+        self.log_area.grid_remove()
+        main.rowconfigure(3, weight=0)
 
         # Log handler
         handler = TextHandler(self.log_area)
