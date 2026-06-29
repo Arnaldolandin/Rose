@@ -51,6 +51,16 @@ PATENTE_RE = re.compile(
     r")\b"
 )
 
+# Nombre completo: Don/Doña + 2+ palabras, o linea tras "Cliente"
+NOMBRE_RE = re.compile(
+    r"(?:"
+    r"Cliente\s*\n\s*([A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){2,})"
+    r"|"
+    r"(?:Don|Doña)\s+([A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑa-záéíóúüñ]+){2,})"
+    r")",
+    re.MULTILINE,
+)
+
 PDF_URL_RE = re.compile(r'(https?://[^"\'\\]*\.pdf[^"\'\\]*(?:[&\'\" ]|$))', re.I)
 
 
@@ -254,6 +264,36 @@ def find_ruts(text: str) -> list[str]:
     return result
 
 
+# Frases comunes que parecen nombres pero no lo son
+_STOP_NAMES: set[str] = {
+    "Servicio Monto Total",
+    "Declaracion Jurada Simple",
+    "Verificacion de identidad",
+    "Verificacion del documento de identidad",
+    "Resumen del proceso",
+    "Obtu Tu Tag",
+    "Codigo de verificacion",
+    "Numero de solicitud",
+}
+
+
+def find_nombres(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in NOMBRE_RE.finditer(text):
+        raw = m.group(1) or m.group(2) or m.group(0)
+        raw = raw.strip()
+        if not raw or raw in seen:
+            continue
+        # Filtrar frases genericas
+        key = raw.replace("\n", " ").replace("  ", " ").strip()
+        if key in _STOP_NAMES:
+            continue
+        seen.add(raw)
+        result.append(key)
+    return result
+
+
 def find_patentes(text: str) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -363,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # --- Descargar PDFs ---
+    found_names: dict[str, list[str]] = {}
     found_ruts: dict[str, list[str]] = {}
     found_patentes: dict[str, list[str]] = {}
     for i, file in enumerate(pdfs, 1):
@@ -372,6 +413,10 @@ def main(argv: list[str] | None = None) -> int:
         text = extract_text(p)
         if not text:
             continue
+        nombres = find_nombres(text)
+        if nombres:
+            found_names[p.name] = nombres
+            log.info("  Nombres: %s", " | ".join(nombres))
         ruts = find_ruts(text)
         if ruts:
             found_ruts[p.name] = ruts
@@ -387,6 +432,14 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + "=" * 60)
     print(f"RESUMEN — {len(pdfs)} PDF(s) procesados")
     print("=" * 60)
+
+    if found_names:
+        print("\nNombres encontrados:")
+        for fname, names in found_names.items():
+            print(f"  {fname}: {' | '.join(names)}")
+    else:
+        print("\n  No se encontraron nombres en los PDFs.")
+
     if found_ruts:
         print("\nRUTs encontrados:")
         all_ruts: list[str] = []
