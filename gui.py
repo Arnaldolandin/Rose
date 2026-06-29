@@ -238,9 +238,10 @@ class App(tk.Tk):
     def _copiar(self, key: str):
         val = self.result_vars[key].get()
         if val and val != "—":
+            txt = val.replace(".", "").replace("-", "") if key == "rut" else val
             self.clipboard_clear()
-            self.clipboard_append(val)
-            log.info("Copiado '%s' al portapapeles", val)
+            self.clipboard_append(txt)
+            log.info("Copiado '%s' al portapapeles", txt)
 
     def _popup_paste(self, event):
         menu = tk.Menu(self, tearoff=0)
