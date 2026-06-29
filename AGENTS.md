@@ -26,5 +26,6 @@ python gui.py                  # GUI con input de ticket + foto + log
 - Checkbox para ocultar/mostrar Log, oculto por defecto (agrupado en LabelFrame para no tapar el checkbox)
 - Click derecho > Pegar en campo ticket
 - Redimension correcta de componentes (rowconfigure/columnconfigure)
+- Copiar RUT sin puntos ni guion (solo numeros+digito verificador)
 - `.exe` standalone con PyInstaller (`dist/integro-bot.exe`, ~37 MB, no requiere Python)
 - Push a `github.com/Arnaldolandin/integro-rut-bot`
