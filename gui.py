@@ -82,6 +82,7 @@ class App(tk.Tk):
         )
         self.ticket_entry.pack(side=tk.LEFT, padx=6)
         self.ticket_entry.bind("<Return>", lambda e: self._buscar())
+        self.ticket_entry.bind("<Button-3>", self._popup_paste)
         self.ticket_entry.focus()
 
         self.buscar_btn = ttk.Button(
@@ -235,6 +236,18 @@ class App(tk.Tk):
             self.clipboard_clear()
             self.clipboard_append(val)
             log.info("Copiado '%s' al portapapeles", val)
+
+    def _popup_paste(self, event):
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Pegar", command=self._paste_from_clip)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _paste_from_clip(self):
+        try:
+            txt = self.clipboard_get()
+            self.ticket_entry.insert(tk.INSERT, txt)
+        except tk.TclError:
+            pass
 
     def _actualizar_rut_val(self, rut: str):
         if not rut or rut == "—":
