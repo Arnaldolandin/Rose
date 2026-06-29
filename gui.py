@@ -1,9 +1,11 @@
 import logging
 import threading
+import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import io
+import os
 
 import requests
 from PIL import Image, ImageTk
@@ -24,6 +26,12 @@ from bot import (
 
 OUT_DIR = Path("./pdfs")
 MAX_IMG_W, MAX_IMG_H = 500, 500
+
+# Directorio base: junto al .exe (frozen) o junto al .py (desarrollo)
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
 
 logging.getLogger().setLevel(logging.DEBUG)
 log.handlers.clear()
@@ -188,7 +196,7 @@ class App(tk.Tk):
     def _do_login(self):
         try:
             cfg = {"user": None, "password": None}
-            cfg_path = Path("./config.json")
+            cfg_path = BASE_DIR / "config.json"
             if cfg_path.exists():
                 import json
                 cfg |= json.loads(cfg_path.read_text(encoding="utf-8"))
