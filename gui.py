@@ -53,6 +53,8 @@ class App(tk.Tk):
 
         self.session: requests.Session | None = None
         self._busy = False
+        self._img_urls: list[str] = []
+        self._img_idx = -1
 
         self._build_ui()
         self._start_login()
@@ -114,9 +116,17 @@ class App(tk.Tk):
         # -- Right: image preview (row 1, col 1) --
         img_frame = ttk.LabelFrame(main, text="Foto", padding=8)
         img_frame.grid(row=1, column=1, sticky=tk.NSEW, pady=(0, 8))
+        img_frame.columnconfigure(0, weight=1)
 
         self.img_label = ttk.Label(img_frame, text="(sin imagen)")
-        self.img_label.pack(fill=tk.BOTH, expand=True)
+        self.img_label.grid(row=0, column=0, columnspan=2, pady=(0, 6))
+
+        nav = ttk.Frame(img_frame)
+        nav.grid(row=1, column=0, columnspan=2)
+        self.btn_anterior = ttk.Button(nav, text="< Anterior", command=self._img_anterior, state="disabled")
+        self.btn_anterior.pack(side=tk.LEFT, padx=4)
+        self.btn_siguiente = ttk.Button(nav, text="Siguiente >", command=self._img_siguiente, state="disabled")
+        self.btn_siguiente.pack(side=tk.LEFT, padx=4)
 
         # -- Log (row 2, colspan 2) --
         ttk.Label(main, text="Log:").grid(row=2, column=0, columnspan=2, sticky=tk.W)
@@ -210,20 +220,33 @@ class App(tk.Tk):
             var.set("—")
 
     def _limpiar_imagen(self):
+        self._img_urls = []
+        self._img_idx = -1
+        self.btn_anterior.configure(state="disabled")
+        self.btn_siguiente.configure(state="disabled")
         self.img_label.configure(image="", text="(cargando...)")
 
     # ------------------------------------------------------------------
-    # Descargar y mostrar imagen
+    # Mostrar imagen por indice
     # ------------------------------------------------------------------
 
-    def _mostrar_imagen(self, url: str):
+    def _mostrar_imagen_idx(self, idx: int):
+        if idx < 0 or idx >= len(self._img_urls):
+            return
+        self._img_idx = idx
+        url = self._img_urls[idx]
+        self.btn_anterior.configure(state="normal" if idx > 0 else "disabled")
+        self.btn_siguiente.configure(state="normal" if idx < len(self._img_urls) - 1 else "disabled")
+        self.img_label.configure(text=f"(cargando {idx + 1}/{len(self._img_urls)})...")
+        threading.Thread(target=self._do_cargar_imagen, args=(url,), daemon=True).start()
+
+    def _do_cargar_imagen(self, url: str):
         try:
             r = self.session.get(url, timeout=30)
             r.raise_for_status()
             img_data = io.BytesIO(r.content)
             pil_img = Image.open(img_data)
 
-            # Redimensionar manteniendo aspect ratio
             w, h = pil_img.size
             scale = min(MAX_IMG_W / w, MAX_IMG_H / h, 1.0)
             if scale < 1.0:
@@ -236,10 +259,21 @@ class App(tk.Tk):
             self.after(0, self._set_imagen_error)
 
     def _set_imagen(self, photo):
-        self.img_label.configure(image=photo, text="")
+        caption = f"{self._img_idx + 1}/{len(self._img_urls)}" if self._img_urls else ""
+        self.img_label.configure(image=photo, text=caption, compound=tk.BOTTOM)
+
+    def _set_img_urls(self, urls: list[str]):
+        self._img_urls = urls
+        self._mostrar_imagen_idx(0)
 
     def _set_imagen_error(self):
-        self.img_label.configure(image="", text="(error al cargar imagen)")
+        self.img_label.configure(image="", text="(sin imagen)")
+
+    def _img_anterior(self):
+        self._mostrar_imagen_idx(self._img_idx - 1)
+
+    def _img_siguiente(self):
+        self._mostrar_imagen_idx(self._img_idx + 1)
 
     def _do_buscar(self, desk: int):
         try:
@@ -275,8 +309,7 @@ class App(tk.Tk):
             if imgs:
                 log.info("Descargando %s imagen(es)...", len(imgs))
                 self.after(0, self._limpiar_imagen)
-                for img_file in imgs:
-                    self._mostrar_imagen(img_file["url"])
+                self.after(0, self._set_img_urls, [f["url"] for f in imgs])
             else:
                 self.after(0, self._set_imagen_error)
                 log.info("Ticket sin imagenes adjuntas.")
