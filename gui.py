@@ -30,8 +30,12 @@ MAX_IMG_W, MAX_IMG_H = 500, 500
 # Directorio base: junto al .exe (frozen) o junto al .py (desarrollo)
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
+    MEIPASS = Path(sys._MEIPASS)
 else:
     BASE_DIR = Path(__file__).parent
+    MEIPASS = BASE_DIR
+
+ROSE_ICO_B64 = "AAABAAEAQEAAAAAAIAC8AgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAABAAAAAQAgGAAAAqmlx3gAAAoNJREFUeJzt2zFLw0AYBuBLAo6CIFQctCI4iYg4+Ss6OAiCgyg4ODiI4CA4CILgIIiL4CA4iIuL4CAIgqCjf0CnOAiC4CIdBEHBRfADBHESC2mT5l56zz2QIfA13Hv33ZckLYqiIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiCIAiC8Eu01gAAYOj3+0EQBKPRaDAYDBJtjTGapiFJEmRZhqIoYIxBEARot9totVpot9totVpot9sAgM3NTViWhVarhXa7jVardXMJAIDH4wEA+L1+rN1dY+12o7UGAIBSCqVSwfn5OQaDAVzXheM4cF0XrusCAHieB8uycHJyglarhU6nA9M0MR6PMZlMMBqN0Ov18Hg9mM1msG0b4/EYhmFgOp1iOp1iMBjA8zwwDAPb29sYDof4+PjA0dERTk5O0O12kUqlMBgMUCqVYJombm9v0Wq1sLKyglKphK2tLVxfXwMATk9Psb+/j9vbW1QqFQDA6uoqbNsGAMxmM6yuriIMQ1QqFWRZBoPBwOzsDIPBAMF2gEajgV6vB9/34XkeDg4O0Ov14DgONjY28Pj4CAB4fn7G6uoqJpMJNjc34fs+0uk0Xl9fAQCZTAaLxQJBEKBarUIpBa01PM+DMSYWi0UcHBzA8zwsFgvM53MAQLfbRRAEaLfbGA6HaLVaaDabqFQq8H0fnufffBEAKJfLqFarsCwLvu9DKYWzszO022282e8RbIdIJpNIp9MwDAPGGGitYZomVlZWUCgUUCgUsFgs0O12P18CAArFQrRcLhEEQbRYLBJFUURRFEWLxYJ8Pp/0P0VRFOVyOcnlctLtdimXy0kmk5FlWSIIAhJLRBAEAABJkiR5niemaUqlUpHlcklBEJBKpSJZlpEkSSRJkrIsC/kfJ0mSxDRNyWazslqtJZPJSDKZlG63K5ZlUalUIq01iSUAAAzDkFwul+RyObIsK9J1XXJdVyzLEq01iSUAwM3NjeTzeen3+3J9fS26rktBEBAA3N/fCwDE9fW1AIDT01MBgNPTU9F1XdJ1XXRdl3K5LIVCIQKAOI5J13VJ13UJw5CUUmSMIV3XCQDSdZ2y2SwBQLlcJqUUaa1JLB0c0G0a4HsAAAAASUVORK5CYII="
 
 logging.getLogger().setLevel(logging.DEBUG)
 log.handlers.clear()
@@ -58,6 +62,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("Rose")
         self.geometry("950x650+0+0")
+        self._set_icon()
         self.resizable(True, True)
 
         self.session: requests.Session | None = None
@@ -67,6 +72,17 @@ class App(tk.Tk):
 
         self._build_ui()
         self._start_login()
+
+    def _set_icon(self):
+        import base64, tempfile
+        ico_path = MEIPASS / "rose.ico"
+        if not ico_path.exists():
+            ico_path = Path(tempfile.mktemp(suffix=".ico"))
+            ico_path.write_bytes(base64.b64decode(ROSE_ICO_B64))
+        try:
+            self.iconbitmap(default=str(ico_path))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # UI
