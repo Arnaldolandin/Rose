@@ -141,13 +141,16 @@ class App(tk.Tk):
         self.btn_siguiente.pack(side=tk.LEFT, padx=4)
 
         self._main = main
-        log_header = ttk.Frame(main)
-        log_header.grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        log_frame = ttk.LabelFrame(main, text="", padding=0)
+        log_frame.grid(row=2, column=0, columnspan=2, sticky=tk.NSEW)
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(1, weight=1)
+
         self._log_visible = tk.BooleanVar(value=False)
-        ttk.Checkbutton(log_header, text="Log", variable=self._log_visible,
-                        command=self._toggle_log).pack(side=tk.LEFT)
+        ttk.Checkbutton(log_frame, text="Log", variable=self._log_visible,
+                        command=self._toggle_log).grid(row=0, column=0, sticky=tk.W, padx=4, pady=(2, 0))
         self.log_area = scrolledtext.ScrolledText(
-            main,
+            log_frame,
             height=12,
             font=("Consolas", 9),
             state="disabled",
@@ -156,9 +159,9 @@ class App(tk.Tk):
             fg="#d4d4d4",
             insertbackground="white",
         )
-        self.log_area.grid(row=3, column=0, columnspan=2, sticky=tk.NSEW)
+        self.log_area.grid(row=1, column=0, sticky=tk.NSEW, padx=4, pady=(2, 4))
         self.log_area.grid_remove()
-        main.rowconfigure(3, weight=0)
+        self._main.rowconfigure(2, weight=0)
 
         # Log handler
         handler = TextHandler(self.log_area)
@@ -263,10 +266,10 @@ class App(tk.Tk):
     def _toggle_log(self):
         if self._log_visible.get():
             self.log_area.grid()
-            self._main.rowconfigure(3, weight=1)
+            self._main.rowconfigure(2, weight=1)
         else:
             self.log_area.grid_remove()
-            self._main.rowconfigure(3, weight=0)
+            self._main.rowconfigure(2, weight=0)
 
     def _limpiar_resultados(self):
         for var in self.result_vars.values():
