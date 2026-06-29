@@ -137,8 +137,11 @@ class App(tk.Tk):
         self.btn_siguiente = ttk.Button(nav, text="Siguiente >", command=self._img_siguiente, state="disabled")
         self.btn_siguiente.pack(side=tk.LEFT, padx=4)
 
-        # -- Log (row 2, colspan 2) --
-        ttk.Label(main, text="Log:").grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        self._main = main
+        log_header.grid(row=2, column=0, columnspan=2, sticky=tk.W)
+        self._log_visible = tk.BooleanVar(value=True)
+        ttk.Checkbutton(log_header, text="Log", variable=self._log_visible,
+                        command=self._toggle_log).pack(side=tk.LEFT)
         self.log_area = scrolledtext.ScrolledText(
             main,
             height=12,
@@ -239,6 +242,14 @@ class App(tk.Tk):
         texto = "✓" if valido else "✗"
         color = "green" if valido else "red"
         self._rut_val_label.configure(text=texto, foreground=color)
+
+    def _toggle_log(self):
+        if self._log_visible.get():
+            self.log_area.grid()
+            self._main.rowconfigure(3, weight=1)
+        else:
+            self.log_area.grid_remove()
+            self._main.rowconfigure(3, weight=0)
 
     def _limpiar_resultados(self):
         for var in self.result_vars.values():
