@@ -19,13 +19,8 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 ## Sesiones
 
-### 2026-06-29 — GUI completa + .exe standalone
-- `gui.py`: interfaz grafica con campo ticket + Buscar, panel Resultado con boton Copiar por campo
-- Validacion digito verificador RUT chileno (`✓`/`✗`)
-- Foto desde S3 con navegacion Anterior/Siguiente si hay varias
-- Checkbox para ocultar/mostrar Log, oculto por defecto (agrupado en LabelFrame para no tapar el checkbox)
-- Click derecho > Pegar en campo ticket
-- Redimension correcta de componentes (rowconfigure/columnconfigure)
-- Copiar RUT sin puntos ni guion (solo numeros+digito verificador)
-- `.exe` standalone con PyInstaller (`dist/Rose.exe`, ~37 MB, no requiere Python)
+### 2026-06-29 — Rose.exe + BASE_DIR fix
+- `.exe` renombrado a `Rose.exe`
+- `BASE_DIR` para encontrar `config.json` junto al .exe (no en _MEIPASS)
+- Copiar RUT sin puntos ni guion
 - Push a `github.com/Arnaldolandin/integro-rut-bot`
