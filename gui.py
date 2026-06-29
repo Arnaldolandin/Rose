@@ -18,6 +18,7 @@ from bot import (
     find_nombres,
     find_ruts,
     find_patentes,
+    validar_rut,
     log,
 )
 
@@ -106,12 +107,20 @@ class App(tk.Tk):
             ttk.Label(row, text=label, width=10, anchor=tk.E).pack(side=tk.LEFT)
             var = tk.StringVar(value="—")
             self.result_vars[key] = var
-            ttk.Label(
+            val_label = ttk.Label(
                 row,
                 textvariable=var,
                 font=("Consolas", 11, "bold"),
                 foreground="#2b2b2b",
-            ).pack(side=tk.LEFT, padx=6)
+            )
+            val_label.pack(side=tk.LEFT, padx=(6, 2))
+
+            if key == "rut":
+                self._rut_val_label = ttk.Label(row, text="", font=("Consolas", 10))
+                self._rut_val_label.pack(side=tk.LEFT, padx=(0, 4))
+
+            btn = ttk.Button(row, text="Copiar", width=5, command=lambda k=key: self._copiar(k))
+            btn.pack(side=tk.LEFT, padx=2)
 
         # -- Right: image preview (row 1, col 1) --
         img_frame = ttk.LabelFrame(main, text="Foto", padding=8)
@@ -215,9 +224,26 @@ class App(tk.Tk):
         self._set_busy(True)
         threading.Thread(target=self._do_buscar, args=(desk,), daemon=True).start()
 
+    def _copiar(self, key: str):
+        val = self.result_vars[key].get()
+        if val and val != "—":
+            self.clipboard_clear()
+            self.clipboard_append(val)
+            log.info("Copiado '%s' al portapapeles", val)
+
+    def _actualizar_rut_val(self, rut: str):
+        if not rut or rut == "—":
+            self._rut_val_label.configure(text="")
+            return
+        valido = validar_rut(rut)
+        texto = "✓" if valido else "✗"
+        color = "green" if valido else "red"
+        self._rut_val_label.configure(text=texto, foreground=color)
+
     def _limpiar_resultados(self):
         for var in self.result_vars.values():
             var.set("—")
+        self._rut_val_label.configure(text="")
 
     def _limpiar_imagen(self):
         self._img_urls = []
@@ -300,6 +326,7 @@ class App(tk.Tk):
                 self.after(0, self.result_vars["nombre"].set, nombre)
             if rut_ticket:
                 self.after(0, self.result_vars["rut"].set, rut_ticket)
+                self.after(0, self._actualizar_rut_val, rut_ticket)
             if patente_ticket:
                 self.after(0, self.result_vars["patente"].set, patente_ticket)
             if email:
@@ -331,6 +358,7 @@ class App(tk.Tk):
                     ruts = find_ruts(text)
                     if ruts:
                         self.after(0, self.result_vars["rut"].set, ruts[0])
+                        self.after(0, self._actualizar_rut_val, ruts[0])
                     patentes = find_patentes(text)
                     if patentes:
                         self.after(0, self.result_vars["patente"].set, patentes[0])

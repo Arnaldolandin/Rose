@@ -277,6 +277,30 @@ _STOP_NAMES: set[str] = {
 }
 
 
+def validar_rut(rut: str) -> bool:
+    limpio = rut.replace(".", "").replace("-", "").strip()
+    if not limpio or limpio[-1].upper() not in "0123456789K":
+        return False
+    cuerpo = limpio[:-1]
+    dv = limpio[-1].upper()
+    if not cuerpo.isdigit():
+        return False
+    suma = 0
+    multiplo = 2
+    for d in reversed(cuerpo):
+        suma += int(d) * multiplo
+        multiplo = 2 if multiplo == 7 else multiplo + 1
+    resto = suma % 11
+    dv_calc = 11 - resto
+    if dv_calc == 11:
+        dv_calc = "0"
+    elif dv_calc == 10:
+        dv_calc = "K"
+    else:
+        dv_calc = str(dv_calc)
+    return dv == dv_calc
+
+
 def find_nombres(text: str) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
