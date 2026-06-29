@@ -138,6 +138,7 @@ class App(tk.Tk):
         self.btn_siguiente.pack(side=tk.LEFT, padx=4)
 
         self._main = main
+        log_header = ttk.Frame(main)
         log_header.grid(row=2, column=0, columnspan=2, sticky=tk.W)
         self._log_visible = tk.BooleanVar(value=True)
         ttk.Checkbutton(log_header, text="Log", variable=self._log_visible,
