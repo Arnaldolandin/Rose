@@ -428,42 +428,20 @@ def main(argv: list[str] | None = None) -> int:
         if not ruts and not patentes:
             log.info("  Sin RUTs ni patentes en este PDF")
 
-    # --- Resumen ---
+    # --- Consolidar resultados ---
+    all_names = list(dict.fromkeys([n for ns in found_names.values() for n in ns]))
+    all_ruts = list(dict.fromkeys([r for rs in found_ruts.values() for r in rs]))
+    all_pats = list(dict.fromkeys([p for ps in found_patentes.values() for p in ps]))
+
     print("\n" + "=" * 60)
-    print(f"RESUMEN — {len(pdfs)} PDF(s) procesados")
+    print("RESULTADO")
     print("=" * 60)
-
-    if found_names:
-        print("\nNombres encontrados:")
-        for fname, names in found_names.items():
-            print(f"  {fname}: {' | '.join(names)}")
-    else:
-        print("\n  No se encontraron nombres en los PDFs.")
-
-    if found_ruts:
-        print("\nRUTs encontrados:")
-        all_ruts: list[str] = []
-        for fname, ruts in found_ruts.items():
-            print(f"  {fname}: {', '.join(ruts)}")
-            all_ruts.extend(ruts)
-        unique_ruts = list(dict.fromkeys(all_ruts))
-        print(f"\n  Total RUTs unicos: {len(unique_ruts)}")
-        for r in unique_ruts:
-            print(f"    {r}")
-    else:
-        print("\n  No se encontraron RUTs en los PDFs.")
-
-    if found_patentes:
-        print("\nPatentes encontradas:")
-        all_pat = list(dict.fromkeys([p for pats in found_patentes.values() for p in pats]))
-        for fname, pats in found_patentes.items():
-            print(f"  {fname}: {', '.join(pats)}")
-        print(f"\n  Total patentes unicas: {len(all_pat)}")
-        for p in all_pat:
-            print(f"    {p}")
-    else:
-        print("\n  No se encontraron patentes en los PDFs.")
-
+    print(f"  Nombre:     {all_names[0] if all_names else '(no encontrado)'}")
+    print(f"  RUT:        {all_ruts[0] if all_ruts else '(no encontrado)'}")
+    print(f"  Patente:    {all_pats[0] if all_pats else '(no encontrado)'}")
+    if ticket:
+        print(f"  Email:      {ticket.get('email','') or '(sin email)'}")
+        print(f"  Solicitud:  #{desk}")
     return 0
 
 
