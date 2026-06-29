@@ -56,8 +56,8 @@ class TextHandler(logging.Handler):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Integro RUT Bot")
-        self.geometry("950x650")
+        self.title("Rose")
+        self.geometry("950x650+0+0")
         self.resizable(True, True)
 
         self.session: requests.Session | None = None
