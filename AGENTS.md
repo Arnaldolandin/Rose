@@ -19,11 +19,12 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 ## Sesiones
 
-### 2026-06-29 — GUI completa con foto, navegacion, validacion RUT, copiar, log toggle, pegar
+### 2026-06-29 — GUI completa + .exe standalone
 - `gui.py`: interfaz grafica con campo ticket + Buscar, panel Resultado con boton Copiar por campo
 - Validacion digito verificador RUT chileno (`✓`/`✗`)
 - Foto desde S3 con navegacion Anterior/Siguiente si hay varias
 - Checkbox para ocultar/mostrar Log, oculto por defecto (agrupado en LabelFrame para no tapar el checkbox)
 - Click derecho > Pegar en campo ticket
 - Redimension correcta de componentes (rowconfigure/columnconfigure)
+- `.exe` standalone con PyInstaller (`dist/integro-bot.exe`, ~37 MB, no requiere Python)
 - Push a `github.com/Arnaldolandin/integro-rut-bot`
