@@ -172,10 +172,25 @@ async def consultar_deudas_async(
                 await page.keyboard.press("Enter")
             log.info("Continuar clicked")
 
-            await page.wait_for_timeout(5000)
+            # Esperar resultados: buscar sección de resultados en el DOM
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const text = document.body.innerText;
+                        // Indicador de resultados cargados: "Qué deseas pagar" + monto > $100
+                        return text.includes("Qu\\u00e9 deseas pagar") &&
+                               /\\$\\s*[1-9]\\d{2,}/.test(text);
+                    }""",
+                    timeout=25000,
+                )
+                log.info("Resultados con montos detectados")
+            except Exception:
+                log.warning("Timeout esperando montos, intentando con texto actual")
+
+            await page.wait_for_timeout(2000)  # Margen extra para que termine de renderizar
 
             result_text = await page.inner_text("body")
-            result["raw_text"] = result_text[:10000]
+            result["raw_text"] = result_text[:15000]
 
             try:
                 await page.screenshot(path=debug_dir / "resultado.png")
@@ -186,18 +201,20 @@ async def consultar_deudas_async(
             result["total"] = _extraer_total(result_text)
 
             txt_lower = result_text.lower()
-            if re.search(r'(?:pagar|total)\s*:?\s*\$?\s*0\b', result_text, re.I):
-                if not result["deudas"]:
+            # Si hay deudas reales detectadas (>$0), sin_deudas = False
+            if result["deudas"]:
+                result["sin_deudas"] = False
+            else:
+                # Solo si no se detectaron montos, buscar frases de "sin deuda"
+                if re.search(r'(?:pagar|total)\s*:?\s*\$?\s*0\b', result_text, re.I):
                     result["sin_deudas"] = True
-            for p in ["no presenta", "sin deuda", "sin registro",
-                      "no se encontraron", "no hay deudas", "no posee",
-                      "sin obligaciones", "al día", "sin resultados"]:
-                if p in txt_lower:
-                    result["sin_deudas"] = True
-                    break
-
-            if result["sin_deudas"]:
-                result["deudas"] = []
+                for p in ["no presenta", "sin deuda", "sin registro",
+                          "no se encontraron", "no hay deudas",
+                          "sin obligaciones", "al día", "sin resultados",
+                          "cliente no posee saldo deudor"]:
+                    if p in txt_lower:
+                        result["sin_deudas"] = True
+                        break
 
             result["success"] = True
             log.info("Completado: %s deudas, sin_deudas=%s",
