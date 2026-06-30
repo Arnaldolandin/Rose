@@ -27,12 +27,16 @@ python gui.py                  # GUI con input de ticket + foto + log
 - **check_vigente_optimo()**: busca en texto de PDFs e imágenes:
   - `% similitud` (regex `(\d+[.,]?\d*)\s*%\s*similitud`)
   - "NO VIGENTE" / "VIGENTE" / "RECHAZADO" / "OPTIMO"
-  - Si hay `% similitud >= 50` y no hay "NO VIGENTE" → VIGENTE
-  - Si `% similitud >= 95` → OPTIMO inferido (umbral independiente del APROBADO/RECHAZADO)
-- **Criterio STATUS final** en GUI (panel Resultado, campo "Status:"):
-  - **APROBADO** (verde) → `% similitud >= 80` Y sin "NO VIGENTE" ni "RECHAZADO" en ningún documento
-  - **RECHAZADO** (rojo) → `% similitud < 80`, o texto "NO VIGENTE", o "RECHAZADO" detectado en algún documento
-  - **PENDIENTE** (naranja) → no se encontró `% similitud` ni etiquetas de verificación en ningún documento
+  - Si `% similitud >= 80` y no hay "NO VIGENTE" → VIGENTE
+  - Si `% similitud >= 95` → OPTIMO inferido
+- **Criterio STATUS final** (en ese orden, primera condición que se cumple):
+  1. RUT inconsistente entre documentos → **RECHAZADO (RUT inconsistente)**
+  2. "RECHAZADO" en texto → **RECHAZADO (RECHAZADO)**
+  3. "NO VIGENTE" en texto → **RECHAZADO (NO VIGENTE)**
+  4. `% similitud < 80` → **RECHAZADO (X.XX% similitud)**
+  5. `% similitud >= 80` y ninguno de los anteriores → **APROBADO**
+  6. Sin datos de verificación → **PENDIENTE**
+- STATUS en GUI muestra los motivos acumulados, ej: `RECHAZADO (RUT inconsistente, NO VIGENTE, 0.00% similitud)`
 - `requirements.txt`: +`pytesseract`
 - Dependencia sistema: `tesseract-ocr` (winget: `UB-Mannheim.TesseractOCR`)
 - `bot.py` ahora acepta `--desk N` (CLI) y también descarga + OCR imágenes
