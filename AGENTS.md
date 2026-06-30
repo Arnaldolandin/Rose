@@ -22,6 +22,14 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 > **Nota**: "conmitea" = commit + push + guardar AGENTS.md en un solo paso.
 
+### 2026-06-30 — Servipag: consulta de deudas TAG
+- **`servipag.py`**: consulta deudas en Servipag usando Chrome CDP (subprocess + Playwright connect_over_cdp) para evitar deteccion de Cloudflare Turnstile
+- Lanza Chrome directamente (sin flags de automatizacion), conecta via `--remote-debugging-port`, interactua con la SPA: selecciona empresa → ingresa RUT → click Continuar → parsea resultado
+- `EMPRESAS` dict con 15 autopistas (Pago Total TAG, Autopista Central, Costanera Norte, etc.)
+- `gui.py`: seccion Servipag en panel Resultado con Combobox de empresa + boton "Ver Deudas"
+- Popup con detalle de deudas si las hay; status "Sin deudas ✓" si no
+- `requirements.txt` actualizado con `playwright>=1.40`
+
 ### 2026-06-30 — Direccion + telefono
 - Extraccion de direccion (`su domicilio es...`) y telefono (`+56 ...`) desde PDF/ticket
 - Nuevos campos en GUI: Direccion y Telefono

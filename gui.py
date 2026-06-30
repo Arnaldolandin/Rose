@@ -25,6 +25,7 @@ from bot import (
     validar_rut,
     log,
 )
+from servipag import consultar_deudas, EMPRESAS
 
 OUT_DIR = Path("./pdfs")
 MAX_IMG_W, MAX_IMG_H = 500, 500
@@ -153,6 +154,26 @@ class App(tk.Tk):
             btn = ttk.Button(row, text="Copiar", width=5, command=lambda k=key: self._copiar(k))
             btn.pack(side=tk.LEFT, padx=2)
 
+        # -- Servipag section --
+        sep = ttk.Separator(results_frame, orient="horizontal")
+        sep.pack(fill=tk.X, pady=(8, 4))
+        sp_row = ttk.Frame(results_frame)
+        sp_row.pack(fill=tk.X, pady=2)
+        ttk.Label(sp_row, text="Servipag:", width=10, anchor=tk.E).pack(side=tk.LEFT)
+        self.sp_empresa = ttk.Combobox(
+            sp_row, values=list(EMPRESAS.keys()), state="readonly", width=22
+        )
+        self.sp_empresa.set("Pago Total TAG")
+        self.sp_empresa.pack(side=tk.LEFT, padx=(6, 4))
+        self.sp_btn = ttk.Button(
+            sp_row, text="Ver Deudas", command=self._consultar_deudas, width=10
+        )
+        self.sp_btn.pack(side=tk.LEFT, padx=2)
+        self.sp_status_var = tk.StringVar(value="")
+        ttk.Label(sp_row, textvariable=self.sp_status_var, font=("Consolas", 9)).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
         # -- Right: image preview (row 1, col 1) --
         img_frame = ttk.LabelFrame(main, text="Foto", padding=8)
         img_frame.grid(row=1, column=1, sticky=tk.NSEW, pady=(0, 8))
@@ -271,6 +292,84 @@ class App(tk.Tk):
             self.clipboard_clear()
             self.clipboard_append(txt)
             log.info("Copiado '%s' al portapapeles", txt)
+
+    def _consultar_deudas(self):
+        rut = self.result_vars["rut"].get()
+        if not rut or rut == "—":
+            log.warning("No hay RUT para consultar")
+            return
+        empresa = self.sp_empresa.get()
+        self.sp_btn.configure(state="disabled")
+        self.sp_status_var.set("Consultando...")
+        log.info("Consultando Servipag: RUT=%s, empresa=%s", rut, empresa)
+        threading.Thread(target=self._do_consultar_deudas, args=(rut, empresa), daemon=True).start()
+
+    def _do_consultar_deudas(self, rut: str, empresa: str):
+        try:
+            res = consultar_deudas(rut, empresa)
+            self.after(0, self._mostrar_resultado_servipag, res)
+        except Exception as e:
+            log.error("Error consulta Servipag: %s", e)
+            self.after(0, self.sp_status_var.set, f"Error: {e}")
+            self.after(0, self.sp_btn.configure, {"state": "normal"})
+
+    def _mostrar_resultado_servipag(self, res: dict):
+        self.sp_btn.configure(state="normal")
+        if not res.get("success"):
+            msg = res.get("error", "Error desconocido")
+            self.sp_status_var.set("Error")
+            log.error("Servipag: %s", msg)
+            return
+
+        if res.get("sin_deudas"):
+            self.sp_status_var.set("Sin deudas ✓")
+            log.info("Servipag: SIN deudas para %s en %s",
+                     res.get("empresa", ""), self.result_vars["rut"].get())
+        elif res.get("deudas"):
+            n = len(res["deudas"])
+            total = res.get("total") or sum(d["monto"] for d in res["deudas"])
+            self.sp_status_var.set(f"{n} deuda(s): ${total:,.0f}")
+            log.info("Servipag: %s deuda(s) encontradas para %s en %s",
+                     n, self.result_vars["rut"].get(), res.get("empresa", ""))
+            for d in res["deudas"]:
+                log.info("  Deuda: %s", d.get("descripcion", ""))
+            # Mostrar popup con detalles
+            self._mostrar_popup_deudas(res)
+        else:
+            self.sp_status_var.set("Sin resultados")
+            log.info("Servipag: sin resultados para %s", self.result_vars["rut"].get())
+
+    def _mostrar_popup_deudas(self, res: dict):
+        win = tk.Toplevel(self)
+        win.title(f"Deudas - {res.get('empresa', '')}")
+        win.geometry("500x300")
+        win.transient(self)
+        win.grab_set()
+
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text=f"Deudas encontradas para RUT {self.result_vars['rut'].get()}",
+                  font=("Consolas", 10, "bold")).pack(anchor=tk.W, pady=(0, 8))
+
+        text = tk.Text(frame, font=("Consolas", 10), wrap=tk.WORD, height=10)
+        text.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        total = 0
+        for i, d in enumerate(res["deudas"], 1):
+            desc = d.get("descripcion", "")
+            monto = d.get("monto_raw", "")
+            text.insert(tk.END, f"{i}. {desc}\n")
+            if monto:
+                text.insert(tk.END, f"   Monto: {monto}\n\n")
+            total += d.get("monto", 0)
+
+        if res.get("total") is not None:
+            text.insert(tk.END, f"\n{'='*40}\nTotal: ${res['total']:,.0f}\n")
+
+        text.configure(state="disabled")
+
+        ttk.Button(frame, text="Cerrar", command=win.destroy).pack()
 
     def _popup_paste(self, event):
         menu = tk.Menu(self, tearoff=0)
