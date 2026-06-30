@@ -511,8 +511,8 @@ class App(tk.Tk):
         ox = int(mx / self._img_scale)
         oy = int(my / self._img_scale)
 
-        # Crop 80x80 region around cursor from ORIGINAL image, then scale up 2x
-        half = 40
+        # Crop 134x134 region around cursor from ORIGINAL image, then scale up 1.2x
+        half = 67
         ow, oh = self._pil_original.size
         left = max(0, ox - half)
         upper = max(0, oy - half)
