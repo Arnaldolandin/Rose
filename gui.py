@@ -20,6 +20,8 @@ from bot import (
     find_nombres,
     find_ruts,
     find_patentes,
+    find_telefono,
+    find_direccion,
     validar_rut,
     log,
 )
@@ -125,6 +127,8 @@ class App(tk.Tk):
             ("Nombre:", "nombre"),
             ("RUT:", "rut"),
             ("Patente:", "patente"),
+            ("Direccion:", "direccion"),
+            ("Telefono:", "telefono"),
             ("Email:", "email"),
             ("Solicitud:", "solicitud"),
         ]
@@ -377,6 +381,8 @@ class App(tk.Tk):
             rut_ticket = (ticket or {}).get("rut", "")
             patente_ticket = (ticket or {}).get("patente", "")
             email = (ticket or {}).get("email", "")
+            direccion_ticket = (ticket or {}).get("direccion", "")
+            telefono_ticket = (ticket or {}).get("telefono", "")
 
             self.after(0, self.result_vars["solicitud"].set, str(desk))
             if nombre:
@@ -386,6 +392,10 @@ class App(tk.Tk):
                 self.after(0, self._actualizar_rut_val, rut_ticket)
             if patente_ticket:
                 self.after(0, self.result_vars["patente"].set, patente_ticket)
+            if direccion_ticket:
+                self.after(0, self.result_vars["direccion"].set, direccion_ticket)
+            if telefono_ticket:
+                self.after(0, self.result_vars["telefono"].set, telefono_ticket)
             if email:
                 self.after(0, self.result_vars["email"].set, email)
 
@@ -419,6 +429,12 @@ class App(tk.Tk):
                     patentes = find_patentes(text)
                     if patentes:
                         self.after(0, self.result_vars["patente"].set, patentes[0])
+                    telefonos = find_telefono(text)
+                    if telefonos:
+                        self.after(0, self.result_vars["telefono"].set, telefonos[0])
+                    direcciones = find_direccion(text)
+                    if direcciones:
+                        self.after(0, self.result_vars["direccion"].set, direcciones[0])
             else:
                 log.info("Ticket sin PDFs adjuntos.")
 

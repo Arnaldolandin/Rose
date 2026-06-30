@@ -173,7 +173,7 @@ def parse_ticket(rsc_text: str) -> Optional[dict]:
         ticket = {}
         for key in ["id", "rut", "fullName", "patente", "autopista",
                       "precioServicio", "tipoTramite", "tipoVehiculo",
-                      "fechaCreacion", "email", "telefono"]:
+                      "fechaCreacion", "email", "telefono", "direccion"]:
             m2 = re.search(rf'"{key}"\s*:\s*"([^"]*)"', raw)
             if m2:
                 ticket[key] = m2.group(1).replace('\\u0026', '&')
@@ -265,6 +265,15 @@ def find_ruts(text: str) -> list[str]:
 
 
 # Frases comunes que parecen nombres pero no lo son
+# Telefono chileno: +56 2 XXX XXXX o +56 9 XXXX XXXX
+TELEFONO_RE = re.compile(r"\+56\s*\d\s*\d{3,4}\s*\d{3,4}")
+
+# Direccion: texto entre "domicilio es" y la proxima coma/punto
+DIRECCION_RE = re.compile(
+    r"domicilio es\s+(.+?)(?:,|oblig[áa]ndose|\.)",
+    re.IGNORECASE,
+)
+
 _STOP_NAMES: set[str] = {
     "Servicio Monto Total",
     "Declaracion Jurada Simple",
@@ -323,6 +332,29 @@ def find_patentes(text: str) -> list[str]:
     result: list[str] = []
     for raw in PATENTE_RE.findall(text):
         raw = raw.strip().upper()
+        if raw and raw not in seen:
+            seen.add(raw)
+            result.append(raw)
+    return result
+
+
+def find_telefono(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in TELEFONO_RE.findall(text):
+        raw = raw.strip()
+        if raw and raw not in seen:
+            seen.add(raw)
+            result.append(raw)
+    return result
+
+
+def find_direccion(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in DIRECCION_RE.finditer(text):
+        raw = m.group(1).strip()
+        raw = re.sub(r"\s+", " ", raw)
         if raw and raw not in seen:
             seen.add(raw)
             result.append(raw)
