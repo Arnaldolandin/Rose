@@ -84,6 +84,7 @@ class App(tk.Tk):
         self._lupa_win = None
         self._lupa_canvas = None
         self._lupa_photo = None
+        self._lupa_zoom = 2.0
 
         self._build_ui()
         self._start_login()
@@ -196,11 +197,14 @@ class App(tk.Tk):
         img_frame.columnconfigure(0, weight=1)
         img_frame.rowconfigure(0, weight=1)
 
-        self.img_label = ttk.Label(img_frame, text="(sin imagen)")
-        self.img_label.grid(row=0, column=0, columnspan=2, sticky=tk.NSEW, pady=(0, 6))
+        self.img_label = ttk.Label(img_frame, text="(sin imagen)", anchor=tk.NW)
+        self.img_label.grid(row=0, column=0, columnspan=2, sticky=tk.NSEW, pady=(0, 2))
+
+        self._img_caption = ttk.Label(img_frame, text="")
+        self._img_caption.grid(row=1, column=0, columnspan=2, pady=(0, 4))
 
         nav = ttk.Frame(img_frame)
-        nav.grid(row=1, column=0, columnspan=2)
+        nav.grid(row=2, column=0, columnspan=2)
         self.btn_anterior = ttk.Button(nav, text="< Anterior", command=self._img_anterior, state="disabled")
         self.btn_anterior.pack(side=tk.LEFT, padx=4)
         self.btn_siguiente = ttk.Button(nav, text="Siguiente >", command=self._img_siguiente, state="disabled")
@@ -343,8 +347,13 @@ class App(tk.Tk):
                      res.get("empresa", ""), self.result_vars["rut"].get())
         elif res.get("deudas"):
             n = len(res["deudas"])
-            total = res.get("total") or sum(d["monto"] for d in res["deudas"])
-            self.sp_status_var.set(f"{n} deuda(s): ${total:,.0f}")
+            total = sum(d["monto"] for d in res["deudas"])
+            if total >= 1_000_000:
+                status_msg = f"{n} deuda(s): ${total:,.0f} — mayor al limite de la deuda"
+                log.warning("Servipag: total $%s >= $1,000,000 — mayor al limite de la deuda", total)
+            else:
+                status_msg = f"{n} deuda(s): ${total:,.0f}"
+            self.sp_status_var.set(status_msg)
             log.info("Servipag: %s deuda(s) encontradas para %s en %s",
                      n, self.result_vars["rut"].get(), res.get("empresa", ""))
             for d in res["deudas"]:
@@ -380,8 +389,7 @@ class App(tk.Tk):
                 text.insert(tk.END, f"   Monto: {monto}\n\n")
             total += d.get("monto", 0)
 
-        if res.get("total") is not None:
-            text.insert(tk.END, f"\n{'='*40}\nTotal: ${res['total']:,.0f}\n")
+        text.insert(tk.END, f"\n{'='*40}\nResumen de deuda(s): ${total:,.0f}\n")
 
         text.configure(state="disabled")
 
@@ -424,6 +432,8 @@ class App(tk.Tk):
     def _limpiar_resultados(self):
         for var in self.result_vars.values():
             var.set("—")
+        self.sp_status_var.set("")
+        self.sp_btn.configure(state="normal")
         self._rut_val_label.configure(text="")
 
     def _limpiar_imagen(self):
@@ -432,6 +442,7 @@ class App(tk.Tk):
         self.btn_anterior.configure(state="disabled")
         self.btn_siguiente.configure(state="disabled")
         self.img_label.configure(image="", text="(cargando...)")
+        self._img_caption.configure(text="")
 
     # ------------------------------------------------------------------
     # Mostrar imagen por indice
@@ -476,11 +487,13 @@ class App(tk.Tk):
 
     def _set_imagen(self, photo):
         caption = f"{self._img_idx + 1}/{len(self._img_urls)}" if self._img_urls else ""
-        self.img_label.configure(image=photo, text=caption, compound=tk.BOTTOM)
+        self._img_caption.configure(text=caption)
+        self.img_label.configure(image=photo)
         # Bind mouse events for magnifier
         self.img_label.bind("<Enter>", self._activar_lupa)
         self.img_label.bind("<Leave>", self._desactivar_lupa)
         self.img_label.bind("<Motion>", self._mover_lupa)
+        self.img_label.bind("<MouseWheel>", self._lupa_scroll)
 
     # ------------------------------------------------------------------
     # Lupa (magnifying glass)
@@ -491,7 +504,7 @@ class App(tk.Tk):
             return
         self._lupa_visible = True
         self._lupa_win = tk.Toplevel(self)
-        self._lupa_win.title("")
+        self._lupa_win.title(f"Zoom: {self._lupa_zoom:.1f}x")
         self._lupa_win.overrideredirect(True)
         self._lupa_win.attributes("-topmost", True)
         self._lupa_canvas = tk.Canvas(self._lupa_win, width=160, height=160,
@@ -508,13 +521,25 @@ class App(tk.Tk):
                 pass
             self._lupa_win = None
 
+    def _lupa_scroll(self, event):
+        delta = getattr(event, 'delta', 0)
+        if delta == 0:
+            if event.num == 4:
+                delta = 120
+            elif event.num == 5:
+                delta = -120
+        step = 0.2 if delta > 0 else -0.2
+        self._lupa_zoom = max(1.0, min(5.0, self._lupa_zoom + step))
+        self._lupa_win.title(f"Zoom: {self._lupa_zoom:.1f}x")
+        self._mover_lupa(event)
+
     def _mover_lupa(self, event):
         if not hasattr(self, "_lupa_visible") or not self._lupa_visible:
             return
         if self._pil_original is None:
             return
 
-        # Mouse position relative to label
+        # Mouse position relative to label (image anchored NW, so coords match)
         mx, my = event.x, event.y
         if mx < 0 or my < 0 or mx > self._display_w or my > self._display_h:
             return
@@ -523,8 +548,8 @@ class App(tk.Tk):
         ox = int(mx / self._img_scale)
         oy = int(my / self._img_scale)
 
-        # Crop 134x134 region around cursor from ORIGINAL image, then scale up 1.2x
-        half = 67
+        # Crop around cursor and scale to 160x160
+        half = max(10, int(80 / self._lupa_zoom))
         ow, oh = self._pil_original.size
         left = max(0, ox - half)
         upper = max(0, oy - half)
@@ -558,6 +583,7 @@ class App(tk.Tk):
 
     def _set_imagen_error(self):
         self.img_label.configure(image="", text="(sin imagen)")
+        self._img_caption.configure(text="")
 
     def _img_anterior(self):
         self._mostrar_imagen_idx(self._img_idx - 1)
@@ -629,6 +655,7 @@ class App(tk.Tk):
                         self.after(0, self.result_vars["nombre"].set, nombres[0])
                     ruts = find_ruts(text)
                     if ruts:
+                        log.info("PDF#%d RUTs: %s", i, ruts)
                         self.after(0, self.result_vars["rut"].set, ruts[0])
                         self.after(0, self._actualizar_rut_val, ruts[0])
                         all_ruts_encontrados.extend(ruts)
@@ -666,10 +693,9 @@ class App(tk.Tk):
                     continue
                 ruts_img = find_ruts(text)
                 if ruts_img:
-                    all_ruts_encontrados.extend(ruts_img)
-                    if not any(v in ruts_img for v in [self.result_vars["rut"].get(), "—"]):
-                        self.after(0, self.result_vars["rut"].set, ruts_img[0])
-                        self.after(0, self._actualizar_rut_val, ruts_img[0])
+                    log.info("OCR RUTs en imagen %d (%s): %s", i, file["url"].split("/")[-1][:40], ruts_img)
+                # OCR es propenso a errores en RUTs (Tesseract en fotos de cédula),
+                # no se incluyen en el chequeo de consistencia — solo PDF/ticket.
                 vo = check_vigente_optimo(text)
                 if vo["vigente"] is False:
                     status_global["vigente"] = False
@@ -707,6 +733,10 @@ class App(tk.Tk):
                 status_color = "orange"
             log.info("Status: %s", status_text)
             self.after(0, self._set_status, status_text, status_color)
+
+            if status_text == "APROBADO":
+                log.info("Status APROBADO → consultando Servipag automáticamente")
+                self.after(500, self._consultar_deudas)
 
             log.info("Listo.")
 

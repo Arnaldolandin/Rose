@@ -42,6 +42,16 @@ python gui.py                  # GUI con input de ticket + foto + log
 - `bot.py` ahora acepta `--desk N` (CLI) y también descarga + OCR imágenes
 - `gui.py`: importa `check_vigente_optimo`, `download_img`, `ocr_image` de bot; procesa PDFs + imágenes y muestra STATUS en color
 
+### 2026-06-30 — Bugfixes lupa, RUT OCR, Servipag auto
+- **Bug RUT cambiaba solo**: OCR de cédula trasera (sin RUT) pisaba el RUT correcto del comprobante → OCR ya no sobrescribe ni se incluye en chequeo de consistencia (solo se loguea)
+- **Bug "RUT inconsistente" falso**: Tesseract malinterpretaba texto de la parte trasera del carnet como RUT → OCR RUTs excluidos de `all_ruts_encontrados`
+- **Servipag automático**: cuando STATUS = APROBADO, ejecuta "Ver Deudas" tras 500ms
+- **Limpieza labels al buscar**: `_limpiar_resultados()` ahora también resetea Servipag status
+- **Resumen de deuda(s)**: usa suma computada de todas las deudas individuales (no el `total` de Servipag que a veces es incorrecto)
+- **Lupa con scroll**: zoom ajustable 1.0x–5.0x con rueda del mouse (bind al img_label)
+- **Lupa corregida**: imagen con `anchor=tk.NW` para que coordenadas del mouse coincidan sin importar el tamaño de la ventana; caption separado en otro label
+- **`gui.py`: `anchor=tk.NW`**, `_lupa_zoom`, `<MouseWheel>` binding, limpieza sp_status
+
 ### 2026-06-30 — Servipag: consulta de deudas TAG
 - **`servipag.py`**: consulta deudas en Servipag usando Chrome CDP (subprocess + Playwright connect_over_cdp) para evitar deteccion de Cloudflare Turnstile
 - Lanza Chrome directamente (sin flags de automatizacion), conecta via `--remote-debugging-port`, interactua con la SPA: selecciona empresa → ingresa RUT → click Continuar → parsea resultado
