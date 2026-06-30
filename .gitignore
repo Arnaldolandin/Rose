@@ -5,6 +5,3 @@ pdfs/
 dist/
 build/
 *.spec
-*.mp4
-*.png
-*_copy.*
