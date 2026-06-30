@@ -20,7 +20,15 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 ## Sesiones
 
-### 2026-06-29 — Rose final: icono, titulo, ventana top-left
+> **Nota**: "conmitea" = commit + push + guardar AGENTS.md en un solo paso.
+
+### 2026-06-30 — Direccion + telefono
+- Extraccion de direccion (`su domicilio es...`) y telefono (`+56 ...`) desde PDF/ticket
+- Nuevos campos en GUI: Direccion y Telefono
+- Icono BMP en .exe para Explorer
+
+### 2026-06-29 — Rose final
+- Proyecto renombrado a **Rose** (carpeta + GitHub)
 - Proyecto renombrado a **Rose** (carpeta + GitHub)
 - Icono de rosa en `.exe` (PyInstaller `--icon`) y en ventana tkinter (`iconbitmap`)
 - `BASE_DIR` junto al .exe para encontrar `config.json`
