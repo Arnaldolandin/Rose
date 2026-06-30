@@ -72,6 +72,15 @@ class App(tk.Tk):
         self._busy = False
         self._img_urls: list[str] = []
         self._img_idx = -1
+        # Lupa (magnifying glass)
+        self._pil_original = None
+        self._img_scale = 1.0
+        self._display_w = 0
+        self._display_h = 0
+        self._lupa_visible = False
+        self._lupa_win = None
+        self._lupa_canvas = None
+        self._lupa_photo = None
 
         self._build_ui()
         self._start_login()
@@ -431,22 +440,105 @@ class App(tk.Tk):
             r = self.session.get(url, timeout=30)
             r.raise_for_status()
             img_data = io.BytesIO(r.content)
-            pil_img = Image.open(img_data)
+            self._pil_original = Image.open(img_data)
 
-            w, h = pil_img.size
+            w, h = self._pil_original.size
             scale = min(MAX_IMG_W / w, MAX_IMG_H / h, 1.0)
-            if scale < 1.0:
-                pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            display_w = int(w * scale) if scale < 1.0 else w
+            display_h = int(h * scale) if scale < 1.0 else h
+            self._img_scale = scale if scale < 1.0 else 1.0
+            self._display_w = display_w
+            self._display_h = display_h
 
-            self._tk_img = ImageTk.PhotoImage(pil_img)
+            if scale < 1.0:
+                pil_display = self._pil_original.resize((display_w, display_h), Image.LANCZOS)
+            else:
+                pil_display = self._pil_original
+
+            self._tk_img = ImageTk.PhotoImage(pil_display)
             self.after(0, self._set_imagen, self._tk_img)
         except Exception as e:
             log.warning("Error al cargar imagen: %s", e)
             self.after(0, self._set_imagen_error)
+            self._pil_original = None
 
     def _set_imagen(self, photo):
         caption = f"{self._img_idx + 1}/{len(self._img_urls)}" if self._img_urls else ""
         self.img_label.configure(image=photo, text=caption, compound=tk.BOTTOM)
+        # Bind mouse events for magnifier
+        self.img_label.bind("<Enter>", self._activar_lupa)
+        self.img_label.bind("<Leave>", self._desactivar_lupa)
+        self.img_label.bind("<Motion>", self._mover_lupa)
+
+    # ------------------------------------------------------------------
+    # Lupa (magnifying glass)
+    # ------------------------------------------------------------------
+
+    def _activar_lupa(self, event=None):
+        if self._pil_original is None:
+            return
+        self._lupa_visible = True
+        self._lupa_win = tk.Toplevel(self)
+        self._lupa_win.title("")
+        self._lupa_win.overrideredirect(True)
+        self._lupa_win.attributes("-topmost", True)
+        self._lupa_canvas = tk.Canvas(self._lupa_win, width=160, height=160,
+                                       highlightthickness=1, highlightbackground="gray")
+        self._lupa_canvas.pack()
+        self._mover_lupa(event)
+
+    def _desactivar_lupa(self, event=None):
+        self._lupa_visible = False
+        if hasattr(self, "_lupa_win") and self._lupa_win:
+            try:
+                self._lupa_win.destroy()
+            except Exception:
+                pass
+            self._lupa_win = None
+
+    def _mover_lupa(self, event):
+        if not hasattr(self, "_lupa_visible") or not self._lupa_visible:
+            return
+        if self._pil_original is None:
+            return
+
+        # Mouse position relative to label
+        mx, my = event.x, event.y
+        if mx < 0 or my < 0 or mx > self._display_w or my > self._display_h:
+            return
+
+        # Map to original image coordinates
+        ox = int(mx / self._img_scale)
+        oy = int(my / self._img_scale)
+
+        # Crop 40x40 region around cursor from ORIGINAL image, then scale up 4x
+        half = 20
+        ow, oh = self._pil_original.size
+        left = max(0, ox - half)
+        upper = max(0, oy - half)
+        right = min(ow, ox + half)
+        lower = min(oh, oy + half)
+        crop = self._pil_original.crop((left, upper, right, lower))
+        zoomed = crop.resize((160, 160), Image.NEAREST)
+
+        self._lupa_photo = ImageTk.PhotoImage(zoomed)
+        self._lupa_canvas.create_image(80, 80, image=self._lupa_photo)
+
+        # Draw crosshair
+        self._lupa_canvas.delete("crosshair")
+        cw, ch = 160, 160
+        self._lupa_canvas.create_line(cw // 2, 0, cw // 2, ch, fill="red", tags="crosshair")
+        self._lupa_canvas.create_line(0, ch // 2, cw, ch // 2, fill="red", tags="crosshair")
+
+        # Position near cursor
+        wx = event.x_root + 20
+        wy = event.y_root + 20
+        # Keep on screen
+        if wx + 160 > self.winfo_screenwidth():
+            wx = event.x_root - 180
+        if wy + 160 > self.winfo_screenheight():
+            wy = event.y_root - 180
+        self._lupa_win.geometry(f"+{wx}+{wy}")
 
     def _set_img_urls(self, urls: list[str]):
         self._img_urls = urls
