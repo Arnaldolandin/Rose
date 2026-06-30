@@ -700,12 +700,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- STATUS FINAL ---
     ruts_limpios = set(r.replace(".", "").replace("-", "") for r in all_ruts if r)
-    rut_inconsistente = len(ruts_limpios) > 1
-    doc_rechazado = (vo_global["vigente"] is False or vo_global["rechazado"]
-                     or vo_global["no_vigente"] or rut_inconsistente)
+    motivos: list[str] = []
+    if len(ruts_limpios) > 1:
+        motivos.append("RUT inconsistente")
+    if vo_global["rechazado"]:
+        motivos.append("RECHAZADO")
+    if vo_global["no_vigente"] or vo_global["vigente"] is False:
+        motivos.append("NO VIGENTE")
+    sim = vo_global.get("similitud_pct")
+    if sim is not None and sim < 80:
+        motivos.append(f"{sim:.2f}% similitud")
+
+    doc_rechazado = bool(motivos)
 
     if doc_rechazado:
-        print("  STATUS: RECHAZADO")
+        print(f"  STATUS: RECHAZADO ({', '.join(motivos)})")
     else:
         print("  STATUS: APROBADO")
     print()

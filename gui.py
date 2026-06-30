@@ -684,13 +684,20 @@ class App(tk.Tk):
 
             # Determinar status final
             ruts_set = set(r.replace(".", "").replace("-", "") for r in all_ruts_encontrados if r)
-            rut_inconsistente = len(ruts_set) > 1
-
-            rechazado = (status_global["vigente"] is False or status_global["rechazado"]
-                         or status_global["no_vigente"] or rut_inconsistente)
+            motivos: list[str] = []
+            if len(ruts_set) > 1:
+                motivos.append("RUT inconsistente")
+            if status_global["rechazado"]:
+                motivos.append("RECHAZADO")
+            if status_global["no_vigente"] or status_global["vigente"] is False:
+                motivos.append("NO VIGENTE")
             sim = status_global["similitud_pct"]
+            if sim is not None and sim < 80:
+                motivos.append(f"{sim:.2f}% similitud")
+
+            rechazado = bool(motivos)
             if rechazado:
-                status_text = "RECHAZADO"
+                status_text = "RECHAZADO (" + ", ".join(motivos) + ")"
                 status_color = "red"
             elif sim is not None and sim >= 80:
                 status_text = "APROBADO"
@@ -698,8 +705,7 @@ class App(tk.Tk):
             else:
                 status_text = "PENDIENTE"
                 status_color = "orange"
-            log.info("Status: %s (similitud=%s%%, vigente=%s, rechazado=%s)",
-                     status_text, sim, status_global["vigente"], status_global["rechazado"])
+            log.info("Status: %s", status_text)
             self.after(0, self._set_status, status_text, status_color)
 
             log.info("Listo.")
