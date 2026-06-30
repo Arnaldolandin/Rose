@@ -22,6 +22,22 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 > **Nota**: "conmitea" = commit + push + guardar AGENTS.md en un solo paso.
 
+### 2026-06-30 — OCR + Status (APROBADO / RECHAZADO)
+- **OCR con Tesseract**: descarga imágenes (JPG/PNG), extrae texto con `tesseract-ocr` + `spa.traineddata` (descargado automáticamente a `~/.tessdata/`)
+- **check_vigente_optimo()**: busca en texto de PDFs e imágenes:
+  - `% similitud` (regex `(\d+[.,]?\d*)\s*%\s*similitud`)
+  - "NO VIGENTE" / "VIGENTE" / "RECHAZADO" / "OPTIMO"
+  - Si hay `% similitud >= 50` y no hay "NO VIGENTE" → VIGENTE
+  - Si `% similitud >= 95` → OPTIMO inferido
+- **Criterio STATUS final** en GUI (panel Resultado, campo "Status:"):
+  - **APROBADO** (verde) → `% similitud >= 50` Y sin "NO VIGENTE" ni "RECHAZADO" en ningún documento
+  - **RECHAZADO** (rojo) → `% similitud < 50`, o texto "NO VIGENTE", o "RECHAZADO" detectado en algún documento
+  - **PENDIENTE** (naranja) → no se encontró `% similitud` ni etiquetas de verificación en ningún documento
+- `requirements.txt`: +`pytesseract`
+- Dependencia sistema: `tesseract-ocr` (winget: `UB-Mannheim.TesseractOCR`)
+- `bot.py` ahora acepta `--desk N` (CLI) y también descarga + OCR imágenes
+- `gui.py`: importa `check_vigente_optimo`, `download_img`, `ocr_image` de bot; procesa PDFs + imágenes y muestra STATUS en color
+
 ### 2026-06-30 — Servipag: consulta de deudas TAG
 - **`servipag.py`**: consulta deudas en Servipag usando Chrome CDP (subprocess + Playwright connect_over_cdp) para evitar deteccion de Cloudflare Turnstile
 - Lanza Chrome directamente (sin flags de automatizacion), conecta via `--remote-debugging-port`, interactua con la SPA: selecciona empresa → ingresa RUT → click Continuar → parsea resultado
