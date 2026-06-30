@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Bot: tag-admin.integrocorp.cl → descarga PDFs de un desk → extrae RUT y patente.
+Bot: tag-admin.integrocorp.cl → descarga PDFs + imágenes de un desk
+     → extrae RUT, patente, verifica vigencia/optimidad.
 
 Flujo:
   1. Login Laravel Sanctum (tag-back.integrocorp.cl)
   2. GET /admin/desk/{id} → extrae RSC data embebido (Next.js)
   3. Parse ticket data y URLs de archivos (S3)
-  4. Descarga PDFs desde S3 (sin auth)
-  5. Extrae texto con PyPDF2 y busca RUT + patente chilena
+  4. Descarga PDFs e imágenes desde S3 (sin auth)
+  5. Extrae texto con PyPDF2 (PDFs) + Tesseract OCR (imágenes)
+  6. Busca RUT, patente, vigencia y optimidad
 
 Uso:
     python bot.py
@@ -19,6 +21,7 @@ import json
 import logging
 import re
 import sys
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
@@ -30,6 +33,30 @@ try:
     import PyPDF2
 except ImportError:
     PyPDF2 = None
+
+try:
+    import pytesseract.pytesseract as pytesseract_impl
+    import pytesseract
+    from PIL import Image
+    import os
+    pytesseract_impl.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    # Asegurar que TESSDATA_PREFIX apunte a una carpeta con spa.traineddata
+    if not os.environ.get("TESSDATA_PREFIX"):
+        _td = Path.home() / ".tessdata"
+        _td.mkdir(exist_ok=True)
+        _lang = _td / "spa.traineddata"
+        if not _lang.exists():
+            import urllib.request
+            print("[BOT] Descargando spa.traineddata...")
+            urllib.request.urlretrieve(
+                "https://github.com/tesseract-ocr/tessdata/raw/main/spa.traineddata",
+                str(_lang)
+            )
+        os.environ["TESSDATA_PREFIX"] = str(_td)
+except ImportError:
+    pytesseract = None
+    pytesseract_impl = None
+    Image = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -236,6 +263,100 @@ def _filename(resp: requests.Response, url: str, idx: int) -> str:
 # ---------------------------------------------------------------------------
 # Texto + RUT
 # ---------------------------------------------------------------------------
+
+
+def download_img(session: requests.Session, url: str, dest: Path, idx: int) -> Optional[Path]:
+    """Descarga imagen (jpg/png) desde S3."""
+    log.info("Descargando imagen %s: %s", idx, url[:80])
+    try:
+        r = session.get(url, timeout=60, stream=True)
+        r.raise_for_status()
+    except Exception as e:
+        log.warning("  Error descargando: %s", e)
+        return None
+
+    ct = r.headers.get("Content-Type", "").lower()
+    raw = r.content
+    if "image" not in ct and raw[:4] not in (b"\xff\xd8\xff\xe0", b"\x89PNG"):
+        log.warning("  No es imagen (Content-Type: %s)", ct)
+        return None
+
+    # Nombre desde URL
+    fname = url.rstrip("/").split("/")[-1].split("?")[0]
+    if not fname.lower().endswith((".png", ".jpg", ".jpeg", ".gif")):
+        fname = f"image_{idx}.png"
+    path = dest / fname
+    path.write_bytes(raw)
+    log.info("  -> %s (%s bytes)", path.name, len(raw))
+    return path
+
+
+def ocr_image(path: Path) -> str:
+    if pytesseract is None:
+        log.error("pip install pytesseract")
+        return ""
+    try:
+        img = Image.open(path)
+        text = pytesseract.image_to_string(img, lang="spa")
+        log.info("  OCR: %s chars", len(text))
+        return text
+    except Exception as e:
+        log.warning("  Error OCR en %s: %s", path.name, e)
+        return ""
+
+
+SIMILITUD_RE = re.compile(r"(\d{1,3}(?:[.,]\d+)?)\s*%\s*similitud", re.IGNORECASE)
+
+
+def check_vigente_optimo(text: str) -> dict:
+    """Busca en el texto (PDF/OCR) estado de verificación y % similitud."""
+    result = {
+        "vigente": None,
+        "optimo": None,
+        "rechazado": False,
+        "no_vigente": False,
+        "similitud_pct": None,
+    }
+
+    # Similitud porcentual
+    sm = SIMILITUD_RE.search(text)
+    if sm:
+        try:
+            result["similitud_pct"] = float(sm.group(1).replace(",", "."))
+        except ValueError:
+            pass
+
+    # NO VIGENTE explícito
+    if re.search(r"NO\s*VIGENTE", text, re.IGNORECASE):
+        result["no_vigente"] = True
+        result["vigente"] = False
+
+    # "VIGENTE" suelto sin "NO" antes
+    vig = re.search(r"(?<!\bNO\s)VIGENTE\b", text, re.IGNORECASE)
+    if vig and not re.search(r"NO\s+VIGENTE", text[max(0, vig.start() - 10):vig.end()], re.IGNORECASE):
+        result["vigente"] = True
+
+    # Si hay % similitud >= 50 y no hay NO VIGENTE, inferir VIGENTE
+    if result["similitud_pct"] is not None and result["no_vigente"] is False:
+        if result["similitud_pct"] >= 50.0:
+            result["vigente"] = True
+        else:
+            result["vigente"] = False
+
+    # ÓPTIMO inferido si similitud >= 95
+    if result["similitud_pct"] is not None and result["similitud_pct"] >= 95.0:
+        result["optimo"] = True
+
+    # "OPTIMO" explícito
+    if re.search(r"OPTIM[OA]", text, re.IGNORECASE):
+        result["optimo"] = True
+
+    # Rechazado
+    if re.search(r"RECHAZADO", text, re.IGNORECASE):
+        result["rechazado"] = True
+        result["vigente"] = False
+
+    return result
 
 
 def extract_text(path: Path) -> str:
@@ -452,22 +573,19 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\nArchivos encontrados: {len(pdfs)} PDF(s), {len(imgs)} imagen(es)")
 
-    if not pdfs:
-        log.warning("No se encontraron PDFs adjuntos")
-        if imgs:
-            log.info("(hay %s imagenes, pero el bot solo procesa PDFs)", len(imgs))
-        return 0
-
     # --- Descargar PDFs ---
     found_names: dict[str, list[str]] = {}
     found_ruts: dict[str, list[str]] = {}
     found_patentes: dict[str, list[str]] = {}
+    vigente_optimo: dict[str, dict] = {}
+
     for i, file in enumerate(pdfs, 1):
         p = download_pdf(session, file["url"], args.out, i)
         if not p:
             continue
         text = extract_text(p)
         if not text:
+            log.info("  PDF sin texto extraible (escaneado?) — %s", p.name)
             continue
         nombres = find_nombres(text)
         if nombres:
@@ -481,8 +599,36 @@ def main(argv: list[str] | None = None) -> int:
         if patentes:
             found_patentes[p.name] = patentes
             log.info("  Patentes: %s", ", ".join(patentes))
+        vo = check_vigente_optimo(text)
+        if vo["vigente"] is not None or vo["optimo"] is not None or vo["rechazado"] or vo.get("similitud_pct") is not None:
+            vigente_optimo[p.name] = vo
+            log.info("  Estados: vigente=%s optimo=%s rechazado=%s similitud=%s",
+                     vo["vigente"], vo["optimo"], vo["rechazado"], vo.get("similitud_pct"))
         if not ruts and not patentes:
             log.info("  Sin RUTs ni patentes en este PDF")
+
+    # --- Descargar imágenes y OCR ---
+    for i, file in enumerate(imgs, 1):
+        p = download_img(session, file["url"], args.out, i)
+        if not p:
+            continue
+        text = ocr_image(p)
+        if not text:
+            continue
+        log.info("  OCR: %s chars", len(text))
+        ruts = find_ruts(text)
+        if ruts:
+            found_ruts[p.name] = ruts
+            log.info("  RUTs: %s", ", ".join(ruts))
+        vo = check_vigente_optimo(text)
+        if vo["vigente"] is not None or vo["optimo"] is not None or vo["rechazado"] or vo.get("similitud_pct") is not None:
+            vigente_optimo[p.name] = vo
+            log.info("  Estados OCR: vigente=%s optimo=%s rechazado=%s similitud=%s",
+                     vo["vigente"], vo["optimo"], vo["rechazado"], vo.get("similitud_pct"))
+        nombres = find_nombres(text)
+        if nombres:
+            found_names[p.name] = nombres
+            log.info("  Nombres OCR: %s", " | ".join(nombres))
 
     # --- Consolidar resultados ---
     all_names = list(dict.fromkeys([n for ns in found_names.values() for n in ns]))
@@ -498,6 +644,71 @@ def main(argv: list[str] | None = None) -> int:
     if ticket:
         print(f"  Email:      {ticket.get('email','') or '(sin email)'}")
         print(f"  Solicitud:  {desk}")
+
+    # --- Validación de RUT coincidente ---
+    print("\n" + "-" * 60)
+    print("VALIDACION")
+    print("-" * 60)
+
+    ticket_rut = ticket.get("rut", "") if ticket else ""
+    rut_ticket_normalized = _normalize(ticket_rut) if ticket_rut else None
+
+    if all_ruts:
+        if len(all_ruts) == 1:
+            print(f"  [OK] RUT unico en todos los docs: {all_ruts[0]}")
+        else:
+            print(f"  [WARN] RUTs multiples: {', '.join(all_ruts)}")
+        if rut_ticket_normalized and rut_ticket_normalized in all_ruts:
+            print(f"  [OK] RUT del ticket coincide con docs")
+        elif rut_ticket_normalized:
+            print(f"  [WARN] RUT ticket ({rut_ticket_normalized}) NO esta en docs")
+    else:
+        print(f"  [WARN] No se encontraron RUTs en ningun documento")
+
+    # --- Validación vigente/optimo + % similitud ---
+    vo_global = {"vigente": None, "optimo": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
+    for fname, vo in vigente_optimo.items():
+        if not vo_global["no_vigente"] and vo.get("no_vigente"):
+            vo_global["no_vigente"] = True
+        if not vo_global["rechazado"] and vo.get("rechazado"):
+            vo_global["rechazado"] = True
+        if vo["vigente"] is False:
+            vo_global["vigente"] = False
+        elif vo["vigente"] is True and vo_global["vigente"] is None:
+            vo_global["vigente"] = True
+        if vo["optimo"] is True:
+            vo_global["optimo"] = True
+        if vo.get("similitud_pct") is not None:
+            vo_global["similitud_pct"] = vo["similitud_pct"]
+
+    print(f"  Verificacion identidad:", end="")
+    if vo_global["similitud_pct"] is not None:
+        print(f" % similitud: {vo_global['similitud_pct']:.2f}%", end="")
+    if vo_global["vigente"] is True:
+        print(" VIGENTE", end="")
+    elif vo_global["vigente"] is False:
+        print(" NO VIGENTE", end="")
+    if vo_global["optimo"] is True:
+        print(" OPTIMO", end="")
+    if vo_global["rechazado"]:
+        print(" RECHAZADO", end="")
+    if vo_global["no_vigente"]:
+        print(" (no_vigente)", end="")
+    print()
+
+    print()
+
+    # --- STATUS FINAL ---
+    rut_ok = len(all_ruts) <= 1 or (rut_ticket_normalized and rut_ticket_normalized in all_ruts)
+    doc_rechazado = vo_global["vigente"] is False or vo_global["rechazado"] or vo_global["no_vigente"]
+
+    if doc_rechazado:
+        print("  STATUS: RECHAZADO")
+    elif rut_ok:
+        print("  STATUS: APROBADO")
+    else:
+        print("  STATUS: RUT INCONSISTENTE")
+    print()
     return 0
 
 

@@ -23,6 +23,9 @@ from bot import (
     find_telefono,
     find_direccion,
     validar_rut,
+    check_vigente_optimo,
+    download_img,
+    ocr_image,
     log,
 )
 from servipag import consultar_deudas, EMPRESAS
@@ -141,7 +144,9 @@ class App(tk.Tk):
             ("Telefono:", "telefono"),
             ("Email:", "email"),
             ("Solicitud:", "solicitud"),
+            ("Status:", "status"),
         ]
+        self._status_label = None
         for label, key in fields:
             row = ttk.Frame(results_frame)
             row.pack(fill=tk.X, pady=1)
@@ -155,6 +160,8 @@ class App(tk.Tk):
                 foreground="#2b2b2b",
             )
             val_label.pack(side=tk.LEFT, padx=(6, 2))
+            if key == "status":
+                self._status_label = val_label
 
             if key == "rut":
                 self._rut_val_label = ttk.Label(row, text="", font=("Consolas", 10))
@@ -401,6 +408,11 @@ class App(tk.Tk):
         color = "green" if valido else "red"
         self._rut_val_label.configure(text=texto, foreground=color)
 
+    def _set_status(self, text: str, color: str):
+        self.result_vars["status"].set(text)
+        if self._status_label:
+            self._status_label.configure(foreground=color)
+
     def _toggle_log(self):
         if self._log_visible.get():
             self.log_area.grid()
@@ -600,6 +612,7 @@ class App(tk.Tk):
                 log.info("Ticket sin imagenes adjuntas.")
 
             # Descargar PDFs y extraer
+            status_global = {"vigente": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
             if pdfs:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 log.info("Descargando %s PDF(s)...", len(pdfs))
@@ -626,8 +639,56 @@ class App(tk.Tk):
                     direcciones = find_direccion(text)
                     if direcciones:
                         self.after(0, self.result_vars["direccion"].set, direcciones[0])
+                    # Verificar estado de identidad
+                    vo = check_vigente_optimo(text)
+                    if vo["vigente"] is False:
+                        status_global["vigente"] = False
+                    elif vo["vigente"] is True and status_global["vigente"] is None:
+                        status_global["vigente"] = True
+                    if vo["rechazado"]:
+                        status_global["rechazado"] = True
+                    if vo["no_vigente"]:
+                        status_global["no_vigente"] = True
+                    if vo.get("similitud_pct") is not None:
+                        status_global["similitud_pct"] = vo["similitud_pct"]
             else:
                 log.info("Ticket sin PDFs adjuntos.")
+
+            # DOWNLOAD AND OCR IMAGES
+            for i, file in enumerate(imgs, 1):
+                p = download_img(self.session, file["url"], OUT_DIR, i)
+                if not p:
+                    continue
+                text = ocr_image(p)
+                if not text:
+                    continue
+                vo = check_vigente_optimo(text)
+                if vo["vigente"] is False:
+                    status_global["vigente"] = False
+                elif vo["vigente"] is True and status_global["vigente"] is None:
+                    status_global["vigente"] = True
+                if vo["rechazado"]:
+                    status_global["rechazado"] = True
+                if vo["no_vigente"]:
+                    status_global["no_vigente"] = True
+                if vo.get("similitud_pct") is not None and status_global["similitud_pct"] is None:
+                    status_global["similitud_pct"] = vo["similitud_pct"]
+
+            # Determinar status final
+            rechazado = status_global["vigente"] is False or status_global["rechazado"] or status_global["no_vigente"]
+            sim = status_global["similitud_pct"]
+            if rechazado:
+                status_text = "RECHAZADO"
+                status_color = "red"
+            elif sim is not None and sim >= 50:
+                status_text = "APROBADO"
+                status_color = "green"
+            else:
+                status_text = "PENDIENTE"
+                status_color = "orange"
+            log.info("Status: %s (similitud=%s%%, vigente=%s, rechazado=%s)",
+                     status_text, sim, status_global["vigente"], status_global["rechazado"])
+            self.after(0, self._set_status, status_text, status_color)
 
             log.info("Listo.")
 
