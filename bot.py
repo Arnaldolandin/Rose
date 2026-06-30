@@ -336,9 +336,9 @@ def check_vigente_optimo(text: str) -> dict:
     if vig and not re.search(r"NO\s+VIGENTE", text[max(0, vig.start() - 10):vig.end()], re.IGNORECASE):
         result["vigente"] = True
 
-    # Si hay % similitud >= 50 y no hay NO VIGENTE, inferir VIGENTE
+    # Si hay % similitud >= 80 y no hay NO VIGENTE, inferir VIGENTE
     if result["similitud_pct"] is not None and result["no_vigente"] is False:
-        if result["similitud_pct"] >= 50.0:
+        if result["similitud_pct"] >= 80.0:
             result["vigente"] = True
         else:
             result["vigente"] = False
@@ -699,15 +699,15 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     # --- STATUS FINAL ---
-    rut_ok = len(all_ruts) <= 1 or (rut_ticket_normalized and rut_ticket_normalized in all_ruts)
-    doc_rechazado = vo_global["vigente"] is False or vo_global["rechazado"] or vo_global["no_vigente"]
+    ruts_limpios = set(r.replace(".", "").replace("-", "") for r in all_ruts if r)
+    rut_inconsistente = len(ruts_limpios) > 1
+    doc_rechazado = (vo_global["vigente"] is False or vo_global["rechazado"]
+                     or vo_global["no_vigente"] or rut_inconsistente)
 
     if doc_rechazado:
         print("  STATUS: RECHAZADO")
-    elif rut_ok:
-        print("  STATUS: APROBADO")
     else:
-        print("  STATUS: RUT INCONSISTENTE")
+        print("  STATUS: APROBADO")
     print()
     return 0
 

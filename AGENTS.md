@@ -28,10 +28,10 @@ python gui.py                  # GUI con input de ticket + foto + log
   - `% similitud` (regex `(\d+[.,]?\d*)\s*%\s*similitud`)
   - "NO VIGENTE" / "VIGENTE" / "RECHAZADO" / "OPTIMO"
   - Si hay `% similitud >= 50` y no hay "NO VIGENTE" → VIGENTE
-  - Si `% similitud >= 95` → OPTIMO inferido
+  - Si `% similitud >= 95` → OPTIMO inferido (umbral independiente del APROBADO/RECHAZADO)
 - **Criterio STATUS final** en GUI (panel Resultado, campo "Status:"):
-  - **APROBADO** (verde) → `% similitud >= 50` Y sin "NO VIGENTE" ni "RECHAZADO" en ningún documento
-  - **RECHAZADO** (rojo) → `% similitud < 50`, o texto "NO VIGENTE", o "RECHAZADO" detectado en algún documento
+  - **APROBADO** (verde) → `% similitud >= 80` Y sin "NO VIGENTE" ni "RECHAZADO" en ningún documento
+  - **RECHAZADO** (rojo) → `% similitud < 80`, o texto "NO VIGENTE", o "RECHAZADO" detectado en algún documento
   - **PENDIENTE** (naranja) → no se encontró `% similitud` ni etiquetas de verificación en ningún documento
 - `requirements.txt`: +`pytesseract`
 - Dependencia sistema: `tesseract-ocr` (winget: `UB-Mannheim.TesseractOCR`)

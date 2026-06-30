@@ -613,6 +613,7 @@ class App(tk.Tk):
 
             # Descargar PDFs y extraer
             status_global = {"vigente": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
+            all_ruts_encontrados: list[str] = []
             if pdfs:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 log.info("Descargando %s PDF(s)...", len(pdfs))
@@ -630,6 +631,7 @@ class App(tk.Tk):
                     if ruts:
                         self.after(0, self.result_vars["rut"].set, ruts[0])
                         self.after(0, self._actualizar_rut_val, ruts[0])
+                        all_ruts_encontrados.extend(ruts)
                     patentes = find_patentes(text)
                     if patentes:
                         self.after(0, self.result_vars["patente"].set, patentes[0])
@@ -662,6 +664,12 @@ class App(tk.Tk):
                 text = ocr_image(p)
                 if not text:
                     continue
+                ruts_img = find_ruts(text)
+                if ruts_img:
+                    all_ruts_encontrados.extend(ruts_img)
+                    if not any(v in ruts_img for v in [self.result_vars["rut"].get(), "—"]):
+                        self.after(0, self.result_vars["rut"].set, ruts_img[0])
+                        self.after(0, self._actualizar_rut_val, ruts_img[0])
                 vo = check_vigente_optimo(text)
                 if vo["vigente"] is False:
                     status_global["vigente"] = False
@@ -675,12 +683,16 @@ class App(tk.Tk):
                     status_global["similitud_pct"] = vo["similitud_pct"]
 
             # Determinar status final
-            rechazado = status_global["vigente"] is False or status_global["rechazado"] or status_global["no_vigente"]
+            ruts_set = set(r.replace(".", "").replace("-", "") for r in all_ruts_encontrados if r)
+            rut_inconsistente = len(ruts_set) > 1
+
+            rechazado = (status_global["vigente"] is False or status_global["rechazado"]
+                         or status_global["no_vigente"] or rut_inconsistente)
             sim = status_global["similitud_pct"]
             if rechazado:
                 status_text = "RECHAZADO"
                 status_color = "red"
-            elif sim is not None and sim >= 50:
+            elif sim is not None and sim >= 80:
                 status_text = "APROBADO"
                 status_color = "green"
             else:
