@@ -37,6 +37,7 @@ from servipag import consultar_deudas, EMPRESAS
 from sii import consultar_sii
 from rvm import extraer_datos_rvm, verificar_rvm, extraer_y_verificar
 from sap import sap_llenar
+from robos import consultar_robo
 
 OUT_DIR = Path("./pdfs")
 MAX_IMG_W, MAX_IMG_H = 500, 500
@@ -227,6 +228,21 @@ class App(tk.Tk):
         self.rvm_btn.pack(side=tk.LEFT, padx=2)
         self.rvm_status_var = tk.StringVar(value="")
         ttk.Label(rvm_row, textvariable=self.rvm_status_var, font=("Consolas", 9)).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        # -- Robo section --
+        sep_robo = ttk.Separator(results_frame, orient="horizontal")
+        sep_robo.pack(fill=tk.X, pady=(4, 4))
+        robo_row = ttk.Frame(results_frame)
+        robo_row.pack(fill=tk.X, pady=2)
+        ttk.Label(robo_row, text="Robo:", width=10, anchor=tk.E).pack(side=tk.LEFT)
+        self.robo_btn = ttk.Button(
+            robo_row, text="Verificar Robo", command=self._consultar_robo, width=10
+        )
+        self.robo_btn.pack(side=tk.LEFT, padx=2)
+        self.robo_status_var = tk.StringVar(value="")
+        ttk.Label(robo_row, textvariable=self.robo_status_var, font=("Consolas", 9)).pack(
             side=tk.LEFT, padx=(6, 0)
         )
 
@@ -605,6 +621,42 @@ class App(tk.Tk):
                  res.get("folio"), res.get("codigo"), res.get("valido"),
                  res.get("mensaje"))
 
+    # ------------------------------------------------------------------
+    # Robo
+    # ------------------------------------------------------------------
+
+    def _consultar_robo(self):
+        patente = self.result_vars["patente"].get()
+        if not patente or patente == "—":
+            log.warning("No hay patente para consultar robo")
+            return
+        self.robo_btn.configure(state="disabled")
+        self.robo_status_var.set("Consultando robo...")
+        log.info("Consultando robo para patente %s...", patente)
+        threading.Thread(target=self._do_consultar_robo, args=(patente,), daemon=True).start()
+
+    def _do_consultar_robo(self, patente: str):
+        try:
+            with self._chrome_lock:
+                res = consultar_robo(patente)
+            self.after(0, self._mostrar_resultado_robo, res)
+        except Exception as e:
+            log.error("Error consulta robo: %s", e)
+            self.after(0, self.robo_status_var.set, f"Error: {e}")
+            self.after(0, self.robo_btn.configure, {"state": "normal"})
+
+    def _mostrar_resultado_robo(self, res: dict):
+        self.robo_btn.configure(state="normal")
+        if not res.get("success"):
+            self.robo_status_var.set("Error")
+            return
+        if res.get("robado") is True:
+            self.robo_status_var.set("Robado ✗")
+            log.warning("Patente ROBADA: %s", res.get("detalle", ""))
+        else:
+            self.robo_status_var.set("Sin encargo ✓")
+            log.info("Patente sin encargo por robo")
+
     def _sap_llenar(self):
         datos = {
             "rut": self.result_vars["rut"].get(),
@@ -753,6 +805,8 @@ class App(tk.Tk):
         self.sii_btn.configure(state="normal")
         self.rvm_status_var.set("")
         self.rvm_btn.configure(state="normal")
+        self.robo_status_var.set("")
+        self.robo_btn.configure(state="normal")
         self._rut_val_label.configure(text="")
 
     def _limpiar_imagen(self):
@@ -1014,6 +1068,8 @@ class App(tk.Tk):
                             self.after(0, self.result_vars["direccion"].set, direcciones[0])
                     # Verificar estado de identidad
                     vo = check_vigente_optimo(text)
+                    log.info("PDF#%d check_vigente_optimo: vigente=%s no_vigente=%s rechazado=%s similitud=%s",
+                             i, vo["vigente"], vo["no_vigente"], vo["rechazado"], vo.get("similitud_pct"))
                     if vo["vigente"] is False:
                         status_global["vigente"] = False
                     elif vo["vigente"] is True and status_global["vigente"] is None:
@@ -1046,6 +1102,8 @@ class App(tk.Tk):
                 # OCR es propenso a errores en RUTs (Tesseract en fotos de cédula),
                 # no se incluyen en el chequeo de consistencia — solo PDF/ticket.
                 vo = check_vigente_optimo(text)
+                log.info("OCR img#%d check_vigente_optimo: vigente=%s no_vigente=%s rechazado=%s similitud=%s",
+                         i, vo["vigente"], vo["no_vigente"], vo["rechazado"], vo.get("similitud_pct"))
                 if vo["vigente"] is False:
                     status_global["vigente"] = False
                 elif vo["vigente"] is True and status_global["vigente"] is None:
@@ -1058,14 +1116,28 @@ class App(tk.Tk):
                     status_global["similitud_pct"] = vo["similitud_pct"]
 
             # Determinar status final
-            ruts_set = set(r.replace(".", "").replace("-", "") for r in all_ruts_encontrados if r)
-            razones_set = set(r.upper().strip() for r in all_razones_encontradas if r)
+            ruts_docs = set(r.replace(".", "").replace("-", "").upper() for r in all_ruts_encontrados if r)
             motivos: list[str] = []
-            if len(ruts_set) > 1:
-                motivos.append("RUT inconsistente")
+            if rut_ticket:
+                rut_ticket_norm = rut_ticket.replace(".", "").replace("-", "").upper()
+                if ruts_docs and rut_ticket_norm not in ruts_docs:
+                    motivos.append("RUT inconsistente")
+                    log.info("RUT del ticket %s NO está en docs: %s",
+                             rut_ticket_norm, " | ".join(ruts_docs))
+                elif ruts_docs:
+                    log.info("RUTs en docs: %s — ticket %s presente",
+                             " | ".join(ruts_docs), rut_ticket_norm)
+                else:
+                    log.info("Sin RUTs en documentos para cotejar con ticket %s", rut_ticket_norm)
+            else:
+                log.info("RUTs en docs: %s (sin RUT en ticket)", " | ".join(ruts_docs) if ruts_docs else "(ninguno)")
+            razones_set = set(r.upper().strip() for r in all_razones_encontradas if r)
             if len(razones_set) > 1:
                 motivos.append("Razón social inconsistente")
                 log.info("Razones sociales múltiples: %s", " | ".join(razones_set))
+            log.info("status_global final: vigente=%s no_vigente=%s rechazado=%s similitud=%s",
+                     status_global["vigente"], status_global["no_vigente"],
+                     status_global["rechazado"], status_global["similitud_pct"])
             if status_global["rechazado"]:
                 motivos.append("RECHAZADO")
             if status_global["no_vigente"] or status_global["vigente"] is False:
@@ -1136,6 +1208,24 @@ class App(tk.Tk):
                             break
             except Exception as e:
                 log.warning("Error verificando RVM: %s", e)
+
+            # Robo verification
+            patente = self.result_vars["patente"].get()
+            if patente and patente != "—":
+                try:
+                    log.info("Consultando robo para patente %s...", patente)
+                    with self._chrome_lock:
+                        robo_res = consultar_robo(patente)
+                    if robo_res.get("success"):
+                        if robo_res.get("robado") is True:
+                            motivos.append("Patente con encargo por robo")
+                            log.warning("Patente ROBADA: %s", robo_res.get("detalle", ""))
+                        else:
+                            log.info("Patente sin encargo por robo")
+                    else:
+                        log.warning("Consulta robo no disponible: %s", robo_res.get("error"))
+                except Exception as e:
+                    log.warning("Error consultando robo: %s", e)
 
             rechazado = bool(motivos)
             if rechazado:

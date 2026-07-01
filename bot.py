@@ -339,12 +339,12 @@ def check_vigente_optimo(text: str) -> dict:
     if vig and not re.search(r"NO\s+VIGENTE", text[max(0, vig.start() - 10):vig.end()], re.IGNORECASE):
         result["vigente"] = True
 
-    # Si hay % similitud >= 90 y no hay NO VIGENTE, inferir VIGENTE
-    if result["similitud_pct"] is not None and result["no_vigente"] is False:
-        if result["similitud_pct"] >= 90.0:
-            result["vigente"] = True
-        else:
-            result["vigente"] = False
+    # Si hay % similitud >= 90, inferir VIGENTE
+    if result["similitud_pct"] is not None and result["similitud_pct"] >= 90.0:
+        result["vigente"] = True
+        result["no_vigente"] = False
+    elif result["similitud_pct"] is not None and result["similitud_pct"] < 90.0:
+        result["vigente"] = False
 
     # ÓPTIMO inferido si similitud >= 95
     if result["similitud_pct"] is not None and result["similitud_pct"] >= 95.0:
