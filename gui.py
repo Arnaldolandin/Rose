@@ -81,6 +81,8 @@ class App(tk.Tk):
 
         self.session: requests.Session | None = None
         self._busy = False
+        self._buscar_lock = threading.Lock()
+        self._chrome_lock = threading.Lock()
         self._img_urls: list[str] = []
         self._img_idx = -1
         # Lupa (magnifying glass)
@@ -297,7 +299,8 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
 
     def _set_busy(self, busy: bool):
-        self._busy = busy
+        with self._buscar_lock:
+            self._busy = busy
         state = "disabled" if busy else "normal"
         self.buscar_btn.configure(state=state)
         self.ticket_text.configure(state=state)
@@ -368,6 +371,10 @@ class App(tk.Tk):
             threading.Thread(target=self._do_batch, args=(tickets,), daemon=True).start()
 
     def _do_batch(self, tickets: list[int]):
+        if not self._buscar_lock.acquire(blocking=False):
+            log.warning("Ya hay una búsqueda en curso")
+            self.after(0, self._set_busy, False)
+            return
         try:
             log.info("Batch: procesando %s tickets...", len(tickets))
             OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -387,6 +394,7 @@ class App(tk.Tk):
         except Exception as e:
             log.error("Error en batch: %s", e)
         finally:
+            self._buscar_lock.release()
             self.after(0, self._set_busy, False)
 
     def _mostrar_reporte_batch(self, resultados: list[dict]):
@@ -478,7 +486,8 @@ class App(tk.Tk):
 
     def _do_consultar_sii(self, rut: str):
         try:
-            res = consultar_sii(rut)
+            with self._chrome_lock:
+                res = consultar_sii(rut)
             self.after(0, self._mostrar_resultado_sii, res)
         except Exception as e:
             log.error("Error consulta SII: %s", e)
@@ -569,7 +578,8 @@ class App(tk.Tk):
                 if "R.V.M." in text or "RVM" in text or "INSCRIPCION" in text.upper():
                     extraccion = extraer_datos_rvm(text)
                     if extraccion["encontrado"]:
-                        res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
+                        with self._chrome_lock:
+                            res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
                         self.after(0, self._mostrar_resultado_rvm, res)
                         return
             self.after(0, self.rvm_status_var.set, "No se encontró RVM en archivos")
@@ -611,7 +621,8 @@ class App(tk.Tk):
 
     def _do_sap_llenar(self, datos: dict):
         try:
-            res = sap_llenar(datos=datos)
+            with self._chrome_lock:
+                res = sap_llenar(datos=datos)
             if res.get("success"):
                 self.after(0, self.sap_status_var.set, "OK ✓")
                 log.info("SAP: formulario llenado correctamente")
@@ -627,7 +638,8 @@ class App(tk.Tk):
 
     def _do_consultar_deudas(self, rut: str, empresa: str):
         try:
-            res = consultar_deudas(rut, empresa)
+            with self._chrome_lock:
+                res = consultar_deudas(rut, empresa)
             self.after(0, self._mostrar_resultado_servipag, res)
         except Exception as e:
             log.error("Error consulta Servipag: %s", e)
@@ -899,14 +911,18 @@ class App(tk.Tk):
         self._mostrar_imagen_idx(self._img_idx + 1)
 
     def _do_buscar(self, desk: int):
-        # Limpiar archivos de la consulta anterior
-        if OUT_DIR.exists():
-            for f in OUT_DIR.iterdir():
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
+        if not self._buscar_lock.acquire(blocking=False):
+            log.warning("Ya hay una búsqueda en curso")
+            self.after(0, self._set_busy, False)
+            return
         try:
+            # Limpiar archivos de la consulta anterior
+            if OUT_DIR.exists():
+                for f in OUT_DIR.iterdir():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
             log.info("Consultando ticket %s...", desk)
             rsc = fetch_desk_rsc(self.session, desk)
             if not rsc:
@@ -1073,7 +1089,8 @@ class App(tk.Tk):
             if rut_ticket and validar_rut(rut_ticket):
                 try:
                     log.info("Consultando SII para RUT %s...", rut_ticket)
-                    sii_res = consultar_sii(rut_ticket)
+                    with self._chrome_lock:
+                        sii_res = consultar_sii(rut_ticket)
                     if sii_res.get("success"):
                         log.info("SII: razon_social=%s vigente=%s inicio=%s registrado=%s",
                                  sii_res.get("razon_social"), sii_res.get("vigente"),
@@ -1112,7 +1129,8 @@ class App(tk.Tk):
                         if extraccion["encontrado"]:
                             log.info("RVM extraído: folio=%s codigo=%s",
                                      extraccion["folio"], extraccion["codigo_verificacion"])
-                            rvm_res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
+                            with self._chrome_lock:
+                                rvm_res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
                             if rvm_res.get("success") and rvm_res.get("valido") is not True:
                                 motivos.append("Certificado RVM no válido")
                             break
@@ -1141,6 +1159,7 @@ class App(tk.Tk):
         except Exception as e:
             log.error("Error: %s", e)
         finally:
+            self._buscar_lock.release()
             self.after(0, self._set_busy, False)
 
 
