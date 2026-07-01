@@ -1,3 +1,4 @@
+from datetime import datetime, date
 import logging
 import threading
 import sys
@@ -20,12 +21,15 @@ from bot import (
     find_nombres,
     find_ruts,
     find_patentes,
+    find_razon_social,
     find_telefono,
     find_direccion,
     validar_rut,
     check_vigente_optimo,
+    find_fecha_emision,
     download_img,
     ocr_image,
+    procesar_ticket,
     log,
 )
 from servipag import consultar_deudas, EMPRESAS
@@ -117,15 +121,14 @@ class App(tk.Tk):
         top = ttk.Frame(main)
         top.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
 
-        ttk.Label(top, text="Ticket:").pack(side=tk.LEFT)
-        self.ticket_var = tk.StringVar()
-        self.ticket_entry = ttk.Entry(
-            top, textvariable=self.ticket_var, width=20, font=("Consolas", 12)
+        ttk.Label(top, text="Ticket(s):").pack(side=tk.LEFT)
+        self.ticket_text = tk.Text(
+            top, width=22, height=3, font=("Consolas", 12), relief=tk.SUNKEN, bd=2
         )
-        self.ticket_entry.pack(side=tk.LEFT, padx=6)
-        self.ticket_entry.bind("<Return>", lambda e: self._buscar())
-        self.ticket_entry.bind("<Button-3>", self._popup_paste)
-        self.ticket_entry.focus()
+        self.ticket_text.pack(side=tk.LEFT, padx=6)
+        self.ticket_text.bind("<Return>", lambda e: self._buscar())
+        self.ticket_text.bind("<Button-3>", self._popup_paste)
+        self.ticket_text.focus()
 
         self.buscar_btn = ttk.Button(
             top, text="Buscar", command=self._buscar
@@ -248,7 +251,7 @@ class App(tk.Tk):
         self._busy = busy
         state = "disabled" if busy else "normal"
         self.buscar_btn.configure(state=state)
-        self.ticket_entry.configure(state=state)
+        self.ticket_text.configure(state=state)
 
     def _start_login(self):
         self._set_busy(True)
@@ -292,18 +295,108 @@ class App(tk.Tk):
     def _buscar(self):
         if self._busy or not self.session:
             return
-        raw = self.ticket_var.get().strip()
+        raw = self.ticket_text.get("1.0", tk.END).strip()
         if not raw:
             return
-        try:
-            desk = int(raw)
-        except ValueError:
-            log.warning("Ticket debe ser numerico: %s", raw)
+        tickets = []
+        for token in raw.replace("\n", " ").replace(",", " ").split():
+            token = token.strip()
+            if token and token.isdigit():
+                tickets.append(int(token))
+        if not tickets:
+            log.warning("No se encontraron tickets validos")
             return
-        self._limpiar_resultados()
-        self._limpiar_imagen()
-        self._set_busy(True)
-        threading.Thread(target=self._do_buscar, args=(desk,), daemon=True).start()
+        if len(tickets) == 1:
+            self._limpiar_resultados()
+            self._limpiar_imagen()
+            self._set_busy(True)
+            threading.Thread(target=self._do_buscar, args=(tickets[0],), daemon=True).start()
+        else:
+            log.info("Batch: %s tickets", len(tickets))
+            self._limpiar_resultados()
+            self._limpiar_imagen()
+            self._set_busy(True)
+            threading.Thread(target=self._do_batch, args=(tickets,), daemon=True).start()
+
+    def _do_batch(self, tickets: list[int]):
+        try:
+            log.info("Batch: procesando %s tickets...", len(tickets))
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+            resultados: list[dict] = []
+            for idx, tid in enumerate(tickets, 1):
+                log.info("--- Batch ticket %s (%d/%d) ---", tid, idx, len(tickets))
+                r = procesar_ticket(self.session, tid, OUT_DIR, check_servipag=True)
+                resultados.append(r)
+                log.info("Ticket #%d → %s", tid, r["status"])
+                # Limpiar carpeta entre tickets
+                for f in OUT_DIR.iterdir():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+            self.after(0, self._mostrar_reporte_batch, resultados)
+        except Exception as e:
+            log.error("Error en batch: %s", e)
+        finally:
+            self.after(0, self._set_busy, False)
+
+    def _mostrar_reporte_batch(self, resultados: list[dict]):
+        no_aprobados = []
+        for r in resultados:
+            if r["status"] != "APROBADO" or r["tiene_deudas"]:
+                no_aprobados.append(r)
+        aprobados = [r for r in resultados if r not in no_aprobados]
+
+        win = tk.Toplevel(self)
+        win.title("Reporte Batch")
+        win.geometry("700x500")
+        win.transient(self)
+        win.grab_set()
+
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="REPORTE FINAL — BATCH",
+                  font=("Consolas", 14, "bold")).pack(anchor=tk.W, pady=(0, 8))
+
+        summary = f"Total: {len(resultados)}  |  Aprobados sin deudas: {len(aprobados)}  |  No aprobados: {len(no_aprobados)}"
+        ttk.Label(frame, text=summary, font=("Consolas", 11)).pack(anchor=tk.W, pady=(0, 12))
+
+        text = tk.Text(frame, font=("Consolas", 10), wrap=tk.WORD, height=18)
+        text.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        if aprobados:
+            text.insert(tk.END, "✓ APROBADOS SIN DEUDAS\n", "green")
+            text.tag_config("green", foreground="green")
+            for r in aprobados:
+                text.insert(tk.END, f"  #{r['desk']}  {r['nombre'] or '?'}  RUT: {r['rut'] or '?'}\n")
+            text.insert(tk.END, "\n")
+
+        if no_aprobados:
+            text.insert(tk.END, "✗ NO APROBADOS\n", "red")
+            text.tag_config("red", foreground="red")
+            for r in no_aprobados:
+                if r["tiene_deudas"]:
+                    razon = f"Deuda TAG: ${r['total_deuda']:,.0f}"
+                elif r["motivos"]:
+                    razon = ", ".join(r["motivos"])
+                else:
+                    razon = r["status"]
+                deuda = f" [${r['total_deuda']:,.0f}]" if r["total_deuda"] else ""
+                text.insert(tk.END, f"  #{r['desk']}  {r['nombre'] or '?'}  RUT: {r['rut'] or '?'}  → {razon}{deuda}\n")
+
+        text.configure(state="disabled")
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X)
+        ttk.Button(btn_frame, text="Copiar reporte", command=lambda: self._copiar_reporte_batch(text)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_frame, text="Cerrar", command=win.destroy).pack(side=tk.LEFT)
+
+    def _copiar_reporte_batch(self, text_widget: tk.Text):
+        content = text_widget.get("1.0", tk.END)
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        log.info("Reporte batch copiado al portapapeles")
 
     def _copiar(self, key: str):
         val = self.result_vars[key].get()
@@ -403,7 +496,7 @@ class App(tk.Tk):
     def _paste_from_clip(self):
         try:
             txt = self.clipboard_get()
-            self.ticket_entry.insert(tk.INSERT, txt)
+            self.ticket_text.insert(tk.INSERT, txt)
         except tk.TclError:
             pass
 
@@ -640,6 +733,8 @@ class App(tk.Tk):
             # Descargar PDFs y extraer
             status_global = {"vigente": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
             all_ruts_encontrados: list[str] = []
+            all_razones_encontradas: list[str] = []
+            fecha_emision = None
             if pdfs:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 log.info("Descargando %s PDF(s)...", len(pdfs))
@@ -650,24 +745,36 @@ class App(tk.Tk):
                     text = extract_text(p)
                     if not text:
                         continue
-                    nombres = find_nombres(text)
-                    if nombres:
-                        self.after(0, self.result_vars["nombre"].set, nombres[0])
                     ruts = find_ruts(text)
                     if ruts:
                         log.info("PDF#%d RUTs: %s", i, ruts)
-                        self.after(0, self.result_vars["rut"].set, ruts[0])
-                        self.after(0, self._actualizar_rut_val, ruts[0])
                         all_ruts_encontrados.extend(ruts)
-                    patentes = find_patentes(text)
-                    if patentes:
-                        self.after(0, self.result_vars["patente"].set, patentes[0])
-                    telefonos = find_telefono(text)
-                    if telefonos:
-                        self.after(0, self.result_vars["telefono"].set, telefonos[0])
-                    direcciones = find_direccion(text)
-                    if direcciones:
-                        self.after(0, self.result_vars["direccion"].set, direcciones[0])
+                    # Preferir datos del ticket sobre PDF (el ticket es fuente oficial)
+                    if not rut_ticket:
+                        ruts_display = find_ruts(text)
+                        if ruts_display:
+                            self.after(0, self.result_vars["rut"].set, ruts_display[0])
+                            self.after(0, self._actualizar_rut_val, ruts_display[0])
+                    if not nombre:
+                        nombres = find_nombres(text)
+                        if nombres:
+                            self.after(0, self.result_vars["nombre"].set, nombres[0])
+                    if not patente_ticket:
+                        patentes = find_patentes(text)
+                        if patentes:
+                            self.after(0, self.result_vars["patente"].set, patentes[0])
+                    razones = find_razon_social(text)
+                    if razones:
+                        log.info("PDF#%d Razón social: %s", i, " | ".join(razones))
+                        all_razones_encontradas.extend(razones)
+                    if not telefono_ticket:
+                        telefonos = find_telefono(text)
+                        if telefonos:
+                            self.after(0, self.result_vars["telefono"].set, telefonos[0])
+                    if not direccion_ticket:
+                        direcciones = find_direccion(text)
+                        if direcciones:
+                            self.after(0, self.result_vars["direccion"].set, direcciones[0])
                     # Verificar estado de identidad
                     vo = check_vigente_optimo(text)
                     if vo["vigente"] is False:
@@ -680,6 +787,11 @@ class App(tk.Tk):
                         status_global["no_vigente"] = True
                     if vo.get("similitud_pct") is not None:
                         status_global["similitud_pct"] = vo["similitud_pct"]
+                    # Fecha de emisión del documento
+                    fe = find_fecha_emision(text)
+                    if fe and (fecha_emision is None or fe < fecha_emision):
+                        fecha_emision = fe
+                        log.info("PDF#%d fecha emision: %s", i, fe)
             else:
                 log.info("Ticket sin PDFs adjuntos.")
 
@@ -710,22 +822,37 @@ class App(tk.Tk):
 
             # Determinar status final
             ruts_set = set(r.replace(".", "").replace("-", "") for r in all_ruts_encontrados if r)
+            razones_set = set(r.upper().strip() for r in all_razones_encontradas if r)
             motivos: list[str] = []
             if len(ruts_set) > 1:
                 motivos.append("RUT inconsistente")
+            if len(razones_set) > 1:
+                motivos.append("Razón social inconsistente")
+                log.info("Razones sociales múltiples: %s", " | ".join(razones_set))
             if status_global["rechazado"]:
                 motivos.append("RECHAZADO")
             if status_global["no_vigente"] or status_global["vigente"] is False:
                 motivos.append("NO VIGENTE")
             sim = status_global["similitud_pct"]
-            if sim is not None and sim < 80:
+            if sim is not None and sim < 90:
                 motivos.append(f"{sim:.2f}% similitud")
+            # Fecha de emision: max 30 dias
+            hoy = date.today()
+            if fecha_emision:
+                dias = (hoy - fecha_emision).days
+                if dias > 30:
+                    motivos.append(f"Documento vencido ({dias} días)")
+                    log.info("Emisión %s (%d días, límite 30)", fecha_emision, dias)
+                else:
+                    log.info("Emisión %s (%d días, ok)", fecha_emision, dias)
+            else:
+                log.info("No se encontró fecha de emisión en PDFs")
 
             rechazado = bool(motivos)
             if rechazado:
                 status_text = "RECHAZADO (" + ", ".join(motivos) + ")"
                 status_color = "red"
-            elif sim is not None and sim >= 80:
+            elif sim is not None and sim >= 90:
                 status_text = "APROBADO"
                 status_color = "green"
             else:
@@ -743,6 +870,14 @@ class App(tk.Tk):
         except Exception as e:
             log.error("Error: %s", e)
         finally:
+            # Limpiar PDFs/imagenes descargados
+            if OUT_DIR.exists():
+                for f in OUT_DIR.iterdir():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+                log.info("Carpeta %s limpiada", OUT_DIR)
             self.after(0, self._set_busy, False)
 
 

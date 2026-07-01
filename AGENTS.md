@@ -22,6 +22,18 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 > **Nota**: "conmitea" = commit + push + guardar AGENTS.md en un solo paso.
 
+### 2026-06-30 — Razón social, batch, deuda threshold
+- **Razón social**: nueva función `find_razon_social()` en bot.py extrae "Razón Social:" / "NOMBRE O RAZÓN SOCIAL:" de PDFs
+- **Validación**: si hay razones sociales distintas entre documentos → STATUS incluye "Razón social inconsistente"
+- **Bugfix RUT pisado**: datos del ticket tienen prioridad; PDFs ya no sobrescriben los campos mostrados
+- **Similitud 80% → 90%**: umbral de coincidencia subido a 90% en todos los chequeos
+- **`procesar_ticket()`**: función reusable que encapsula el análisis completo y devuelve dict con status/motivos/deudas
+- **Batch CLI**: `python bot.py -b tickets.txt` procesa lista de tickets, consulta Servipag, reporte final
+- **Batch GUI**: botón Batch lee tickets desde la caja de texto; un solo botón "Buscar" decide si es single o batch según cantidad
+- **Caja de texto multilínea**: reemplaza el Entry por un Text widget (soporta pegar múltiples tickets)
+- **Deuda threshold**: solo deudas ≥ $1.000.000 bloquean la aprobación (deudas menores se ignoran)
+- Reporte batch muestra aprobados sin deudas y no aprobados con razón + monto de deuda si aplica
+
 ### 2026-06-30 — OCR + Status (APROBADO / RECHAZADO)
 - **OCR con Tesseract**: descarga imágenes (JPG/PNG), extrae texto con `tesseract-ocr` + `spa.traineddata` (descargado automáticamente a `~/.tessdata/`)
 - **check_vigente_optimo()**: busca en texto de PDFs e imágenes:

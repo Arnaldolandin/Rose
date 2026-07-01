@@ -17,6 +17,7 @@ Uso:
 """
 
 import argparse
+from datetime import datetime, date
 import json
 import logging
 import re
@@ -336,9 +337,9 @@ def check_vigente_optimo(text: str) -> dict:
     if vig and not re.search(r"NO\s+VIGENTE", text[max(0, vig.start() - 10):vig.end()], re.IGNORECASE):
         result["vigente"] = True
 
-    # Si hay % similitud >= 80 y no hay NO VIGENTE, inferir VIGENTE
+    # Si hay % similitud >= 90 y no hay NO VIGENTE, inferir VIGENTE
     if result["similitud_pct"] is not None and result["no_vigente"] is False:
-        if result["similitud_pct"] >= 80.0:
+        if result["similitud_pct"] >= 90.0:
             result["vigente"] = True
         else:
             result["vigente"] = False
@@ -482,6 +483,49 @@ def find_direccion(text: str) -> list[str]:
     return result
 
 
+FECHA_EMISION_RE = re.compile(
+    r"(?:fecha\s*(?:de\s+)?)?emisi[oó]n\s*[:\s]*(\d{1,2})[/-](\d{1,2})[/-](\d{4})",
+    re.I,
+)
+FECHA_GENERICA_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")
+
+
+def find_fecha_emision(text: str) -> Optional[date]:
+    """Busca fecha de emisión en el texto del PDF.
+    Primero busca con palabra clave 'emisión', luego cae a cualquier fecha.
+    """
+    m = FECHA_EMISION_RE.search(text)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    m = FECHA_GENERICA_RE.search(text)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+    return None
+
+
+RAZON_SOCIAL_RE = re.compile(
+    r"(?:raz[oó]n\s*(?:social|de\s+la\s+sociedad)|nombre\s+o\s+raz[oó]n\s+social)\s*:\s*(.+?)(?:\n|$)",
+    re.I,
+)
+
+
+def find_razon_social(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for m in RAZON_SOCIAL_RE.finditer(text):
+        raw = m.group(1).strip().rstrip(".")
+        if raw and raw not in seen:
+            seen.add(raw)
+            result.append(raw)
+    return result
+
+
 def _normalize(raw: str) -> Optional[str]:
     c = raw.replace(".", "").replace("-", "")
     if not c or not c[:-1].isdigit():
@@ -515,7 +559,163 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--out", "-o", type=Path, default=Path("./pdfs"))
     p.add_argument("--verbose", "-v", action="store_true")
+    p.add_argument(
+        "--batch", "-b", type=Path, default=None,
+        help="Archivo .txt con lista de tickets (uno por linea) para procesamiento por lotes",
+    )
     return p.parse_args(argv)
+
+
+def procesar_ticket(
+    session: requests.Session,
+    desk: int,
+    out_dir: Path,
+    *,
+    check_servipag: bool = False,
+    empresa_servipag: str = "Pago Total TAG",
+) -> dict:
+    """Procesa un ticket completo y devuelve dict con resultados."""
+    from servipag import consultar_deudas
+
+    result: dict = {
+        "desk": desk,
+        "rut": "",
+        "nombre": "",
+        "patente": "",
+        "email": "",
+        "status": "",
+        "motivos": [],
+        "rechazado": False,
+        "deudas": None,
+        "tiene_deudas": False,
+        "total_deuda": 0,
+    }
+
+    rsc = fetch_desk_rsc(session, desk)
+    if not rsc:
+        result["status"] = "ERROR"
+        result["motivos"] = ["No se pudo obtener datos del ticket"]
+        return result
+
+    ticket = parse_ticket(rsc)
+    files = extract_file_urls(rsc)
+    pdfs = [f for f in files if f["tipo"] == "pdf"]
+    imgs = [f for f in files if f["tipo"] == "img"]
+
+    # Datos del ticket
+    nombre_ticket = (ticket or {}).get("fullName", "")
+    rut_ticket = (ticket or {}).get("rut", "")
+    patente_ticket = (ticket or {}).get("patente", "")
+    email_ticket = (ticket or {}).get("email", "")
+    direccion_ticket = (ticket or {}).get("direccion", "")
+    telefono_ticket = (ticket or {}).get("telefono", "")
+
+    result["rut"] = rut_ticket
+    result["nombre"] = nombre_ticket
+    result["patente"] = patente_ticket
+    result["email"] = email_ticket
+
+    # Procesar PDFs
+    all_ruts_encontrados: list[str] = []
+    all_razones_encontradas: list[str] = []
+    status_global = {"vigente": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
+    fecha_emision = None
+
+    for i, file in enumerate(pdfs, 1):
+        p = download_pdf(session, file["url"], out_dir, i)
+        if not p:
+            continue
+        text = extract_text(p)
+        if not text:
+            continue
+        ruts = find_ruts(text)
+        if ruts:
+            all_ruts_encontrados.extend(ruts)
+        razones = find_razon_social(text)
+        if razones:
+            all_razones_encontradas.extend(razones)
+        vo = check_vigente_optimo(text)
+        if vo["vigente"] is False:
+            status_global["vigente"] = False
+        elif vo["vigente"] is True and status_global["vigente"] is None:
+            status_global["vigente"] = True
+        if vo["rechazado"]:
+            status_global["rechazado"] = True
+        if vo["no_vigente"]:
+            status_global["no_vigente"] = True
+        if vo.get("similitud_pct") is not None:
+            status_global["similitud_pct"] = vo["similitud_pct"]
+        fe = find_fecha_emision(text)
+        if fe and (fecha_emision is None or fe < fecha_emision):
+            fecha_emision = fe
+
+    # OCR imágenes
+    for i, file in enumerate(imgs, 1):
+        p = download_img(session, file["url"], out_dir, i)
+        if not p:
+            continue
+        text = ocr_image(p)
+        if not text:
+            continue
+        vo = check_vigente_optimo(text)
+        if vo["vigente"] is False:
+            status_global["vigente"] = False
+        elif vo["vigente"] is True and status_global["vigente"] is None:
+            status_global["vigente"] = True
+        if vo["rechazado"]:
+            status_global["rechazado"] = True
+        if vo["no_vigente"]:
+            status_global["no_vigente"] = True
+        if vo.get("similitud_pct") is not None and status_global["similitud_pct"] is None:
+            status_global["similitud_pct"] = vo["similitud_pct"]
+
+    # Status
+    ruts_set = set(r.replace(".", "").replace("-", "") for r in all_ruts_encontrados if r)
+    razones_set = set(r.upper().strip() for r in all_razones_encontradas if r)
+    motivos: list[str] = []
+    if len(ruts_set) > 1:
+        motivos.append("RUT inconsistente")
+    if len(razones_set) > 1:
+        motivos.append("Razón social inconsistente")
+    if status_global["rechazado"]:
+        motivos.append("RECHAZADO")
+    if status_global["no_vigente"] or status_global["vigente"] is False:
+        motivos.append("NO VIGENTE")
+    sim = status_global["similitud_pct"]
+    if sim is not None and sim < 90:
+        motivos.append(f"{sim:.2f}% similitud")
+    hoy = date.today()
+    if fecha_emision:
+        dias = (hoy - fecha_emision).days
+        if dias > 30:
+            motivos.append(f"Documento vencido ({dias} días)")
+
+    rechazado = bool(motivos)
+    if rechazado:
+        status_text = "RECHAZADO (" + ", ".join(motivos) + ")"
+    elif sim is not None and sim >= 90:
+        status_text = "APROBADO"
+    else:
+        status_text = "PENDIENTE"
+
+    result["status"] = status_text
+    result["motivos"] = motivos
+    result["rechazado"] = rechazado
+
+    # Servipag si aprobado
+    if check_servipag and status_text == "APROBADO" and rut_ticket:
+        try:
+            deudas_res = consultar_deudas(rut_ticket, empresa_servipag)
+            result["deudas"] = deudas_res
+            if deudas_res.get("success") and not deudas_res.get("sin_deudas") and deudas_res.get("deudas"):
+                total_deuda = sum(d.get("monto", 0) for d in deudas_res["deudas"])
+                result["total_deuda"] = total_deuda
+                if total_deuda >= 1_000_000:
+                    result["tiene_deudas"] = True
+        except Exception as e:
+            log.warning("Error consultando Servipag para ticket %s: %s", desk, e)
+
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -549,175 +749,71 @@ def main(argv: list[str] | None = None) -> int:
     if not sanctum_login(session, user, password):
         return 1
 
-    # --- Obtener datos del desk ---
-    rsc = fetch_desk_rsc(session, desk)
-    if not rsc:
-        log.error("No se pudieron extraer datos RSC del desk %s", desk)
-        return 1
+    # --- Batch o single ---
+    if args.batch:
+        tickets_raw = args.batch.read_text(encoding="utf-8").strip()
+        tickets = []
+        for line in tickets_raw.splitlines():
+            line = line.strip()
+            if line and line.isdigit():
+                tickets.append(int(line))
+        if not tickets:
+            log.error("No se encontraron tickets validos en %s", args.batch)
+            return 1
+        log.info("Procesando %s tickets en modo batch...", len(tickets))
+        args.out.mkdir(parents=True, exist_ok=True)
+        resultados: list[dict] = []
+        for idx, tid in enumerate(tickets, 1):
+            print(f"\n{'='*60}")
+            print(f"TICKET #{tid} ({idx}/{len(tickets)})")
+            print(f"{'='*60}")
+            r = procesar_ticket(session, tid, args.out, check_servipag=True)
+            resultados.append(r)
+            # Limpiar carpeta entre tickets
+            for f in args.out.iterdir():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        # Reporte final
+        print(f"\n\n{'='*60}")
+        print("REPORTE FINAL — BATCH")
+        print(f"{'='*60}")
+        print()
+        aprobados = [r for r in resultados if r["status"] == "APROBADO" and not r["tiene_deudas"]]
+        no_aprobados = [r for r in resultados if r["status"] != "APROBADO" or r["tiene_deudas"]]
+        print(f"Total procesados: {len(resultados)}")
+        print(f"Aprobados sin deudas: {len(aprobados)}")
+        print(f"No aprobados: {len(no_aprobados)}")
+        print()
+        if aprobados:
+            print("--- APROBADOS SIN DEUDAS ---")
+            for r in aprobados:
+                print(f"  #{r['desk']}  {r['nombre'] or '?'}  RUT: {r['rut'] or '?'}")
+        print()
+        if no_aprobados:
+            print("--- NO APROBADOS ---")
+            for r in no_aprobados:
+                if r["tiene_deudas"]:
+                    razon = f"Deuda TAG: ${r['total_deuda']:,.0f}"
+                elif r["motivos"]:
+                    razon = ", ".join(r["motivos"])
+                else:
+                    razon = r["status"]
+                deuda = f" [${r['total_deuda']:,.0f}]" if r["total_deuda"] else ""
+                print(f"  #{r['desk']}  {r['nombre'] or '?'}  RUT: {r['rut'] or '?'}  → {razon}{deuda}")
+        print()
+        return 0
 
-    # --- Parsear ticket ---
-    ticket = parse_ticket(rsc)
-    if ticket:
-        print(f"\n=== TICKET #{desk} ===")
-        for k, v in ticket.items():
-            if v:
-                print(f"  {k}: {v}")
-    else:
-        print(f"\n=== TICKET #{desk} ===")
-        print("  (no se pudo parsear JSON completo)")
-
-    # --- Extraer URLs de archivos ---
-    files = extract_file_urls(rsc)
-    pdfs = [f for f in files if f["tipo"] == "pdf"]
-    imgs = [f for f in files if f["tipo"] == "img"]
-
-    print(f"\nArchivos encontrados: {len(pdfs)} PDF(s), {len(imgs)} imagen(es)")
-
-    # --- Descargar PDFs ---
-    found_names: dict[str, list[str]] = {}
-    found_ruts: dict[str, list[str]] = {}
-    found_patentes: dict[str, list[str]] = {}
-    vigente_optimo: dict[str, dict] = {}
-
-    for i, file in enumerate(pdfs, 1):
-        p = download_pdf(session, file["url"], args.out, i)
-        if not p:
-            continue
-        text = extract_text(p)
-        if not text:
-            log.info("  PDF sin texto extraible (escaneado?) — %s", p.name)
-            continue
-        nombres = find_nombres(text)
-        if nombres:
-            found_names[p.name] = nombres
-            log.info("  Nombres: %s", " | ".join(nombres))
-        ruts = find_ruts(text)
-        if ruts:
-            found_ruts[p.name] = ruts
-            log.info("  RUTs: %s", ", ".join(ruts))
-        patentes = find_patentes(text)
-        if patentes:
-            found_patentes[p.name] = patentes
-            log.info("  Patentes: %s", ", ".join(patentes))
-        vo = check_vigente_optimo(text)
-        if vo["vigente"] is not None or vo["optimo"] is not None or vo["rechazado"] or vo.get("similitud_pct") is not None:
-            vigente_optimo[p.name] = vo
-            log.info("  Estados: vigente=%s optimo=%s rechazado=%s similitud=%s",
-                     vo["vigente"], vo["optimo"], vo["rechazado"], vo.get("similitud_pct"))
-        if not ruts and not patentes:
-            log.info("  Sin RUTs ni patentes en este PDF")
-
-    # --- Descargar imágenes y OCR ---
-    for i, file in enumerate(imgs, 1):
-        p = download_img(session, file["url"], args.out, i)
-        if not p:
-            continue
-        text = ocr_image(p)
-        if not text:
-            continue
-        log.info("  OCR: %s chars", len(text))
-        ruts = find_ruts(text)
-        if ruts:
-            found_ruts[p.name] = ruts
-            log.info("  RUTs: %s", ", ".join(ruts))
-        vo = check_vigente_optimo(text)
-        if vo["vigente"] is not None or vo["optimo"] is not None or vo["rechazado"] or vo.get("similitud_pct") is not None:
-            vigente_optimo[p.name] = vo
-            log.info("  Estados OCR: vigente=%s optimo=%s rechazado=%s similitud=%s",
-                     vo["vigente"], vo["optimo"], vo["rechazado"], vo.get("similitud_pct"))
-        nombres = find_nombres(text)
-        if nombres:
-            found_names[p.name] = nombres
-            log.info("  Nombres OCR: %s", " | ".join(nombres))
-
-    # --- Consolidar resultados ---
-    all_names = list(dict.fromkeys([n for ns in found_names.values() for n in ns]))
-    all_ruts = list(dict.fromkeys([r for rs in found_ruts.values() for r in rs]))
-    all_pats = list(dict.fromkeys([p for ps in found_patentes.values() for p in ps]))
-
-    print("\n" + "=" * 60)
-    print("RESULTADO")
-    print("=" * 60)
-    print(f"  Nombre:     {all_names[0] if all_names else '(no encontrado)'}")
-    print(f"  RUT:        {all_ruts[0] if all_ruts else '(no encontrado)'}")
-    print(f"  Patente:    {all_pats[0] if all_pats else '(no encontrado)'}")
-    if ticket:
-        print(f"  Email:      {ticket.get('email','') or '(sin email)'}")
-        print(f"  Solicitud:  {desk}")
-
-    # --- Validación de RUT coincidente ---
-    print("\n" + "-" * 60)
-    print("VALIDACION")
-    print("-" * 60)
-
-    ticket_rut = ticket.get("rut", "") if ticket else ""
-    rut_ticket_normalized = _normalize(ticket_rut) if ticket_rut else None
-
-    if all_ruts:
-        if len(all_ruts) == 1:
-            print(f"  [OK] RUT unico en todos los docs: {all_ruts[0]}")
-        else:
-            print(f"  [WARN] RUTs multiples: {', '.join(all_ruts)}")
-        if rut_ticket_normalized and rut_ticket_normalized in all_ruts:
-            print(f"  [OK] RUT del ticket coincide con docs")
-        elif rut_ticket_normalized:
-            print(f"  [WARN] RUT ticket ({rut_ticket_normalized}) NO esta en docs")
-    else:
-        print(f"  [WARN] No se encontraron RUTs en ningun documento")
-
-    # --- Validación vigente/optimo + % similitud ---
-    vo_global = {"vigente": None, "optimo": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
-    for fname, vo in vigente_optimo.items():
-        if not vo_global["no_vigente"] and vo.get("no_vigente"):
-            vo_global["no_vigente"] = True
-        if not vo_global["rechazado"] and vo.get("rechazado"):
-            vo_global["rechazado"] = True
-        if vo["vigente"] is False:
-            vo_global["vigente"] = False
-        elif vo["vigente"] is True and vo_global["vigente"] is None:
-            vo_global["vigente"] = True
-        if vo["optimo"] is True:
-            vo_global["optimo"] = True
-        if vo.get("similitud_pct") is not None:
-            vo_global["similitud_pct"] = vo["similitud_pct"]
-
-    print(f"  Verificacion identidad:", end="")
-    if vo_global["similitud_pct"] is not None:
-        print(f" % similitud: {vo_global['similitud_pct']:.2f}%", end="")
-    if vo_global["vigente"] is True:
-        print(" VIGENTE", end="")
-    elif vo_global["vigente"] is False:
-        print(" NO VIGENTE", end="")
-    if vo_global["optimo"] is True:
-        print(" OPTIMO", end="")
-    if vo_global["rechazado"]:
-        print(" RECHAZADO", end="")
-    if vo_global["no_vigente"]:
-        print(" (no_vigente)", end="")
-    print()
-
-    print()
-
-    # --- STATUS FINAL ---
-    ruts_limpios = set(r.replace(".", "").replace("-", "") for r in all_ruts if r)
-    motivos: list[str] = []
-    if len(ruts_limpios) > 1:
-        motivos.append("RUT inconsistente")
-    if vo_global["rechazado"]:
-        motivos.append("RECHAZADO")
-    if vo_global["no_vigente"] or vo_global["vigente"] is False:
-        motivos.append("NO VIGENTE")
-    sim = vo_global.get("similitud_pct")
-    if sim is not None and sim < 80:
-        motivos.append(f"{sim:.2f}% similitud")
-
-    doc_rechazado = bool(motivos)
-
-    if doc_rechazado:
-        print(f"  STATUS: RECHAZADO ({', '.join(motivos)})")
-    else:
-        print("  STATUS: APROBADO")
-    print()
+    # --- Modo single ticket ---
+    r = procesar_ticket(session, desk, args.out)
+    print(f"\n=== TICKET #{desk} ===")
+    print(f"  Nombre:     {r['nombre'] or '(no encontrado)'}")
+    print(f"  RUT:        {r['rut'] or '(no encontrado)'}")
+    print(f"  Patente:    {r['patente'] or '(no encontrado)'}")
+    print(f"  Email:      {r['email'] or '(sin email)'}")
+    print(f"  Solicitud:  {desk}")
+    print(f"  STATUS:     {r['status']}")
     return 0
 
 
