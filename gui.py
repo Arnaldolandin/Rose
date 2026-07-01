@@ -1,5 +1,6 @@
 from datetime import datetime, date
 import logging
+import re
 import threading
 import sys
 from pathlib import Path
@@ -33,6 +34,9 @@ from bot import (
     log,
 )
 from servipag import consultar_deudas, EMPRESAS
+from sii import consultar_sii
+from rvm import extraer_datos_rvm, verificar_rvm, extraer_y_verificar
+from sap import sap_llenar
 
 OUT_DIR = Path("./pdfs")
 MAX_IMG_W, MAX_IMG_H = 500, 500
@@ -191,6 +195,51 @@ class App(tk.Tk):
         self.sp_btn.pack(side=tk.LEFT, padx=2)
         self.sp_status_var = tk.StringVar(value="")
         ttk.Label(sp_row, textvariable=self.sp_status_var, font=("Consolas", 9)).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        # -- SII section --
+        sep_sii = ttk.Separator(results_frame, orient="horizontal")
+        sep_sii.pack(fill=tk.X, pady=(4, 4))
+        sii_row = ttk.Frame(results_frame)
+        sii_row.pack(fill=tk.X, pady=2)
+        ttk.Label(sii_row, text="SII:", width=10, anchor=tk.E).pack(side=tk.LEFT)
+        self.sii_btn = ttk.Button(
+            sii_row, text="Verificar SII", command=self._consultar_sii, width=10
+        )
+        self.sii_btn.pack(side=tk.LEFT, padx=2)
+        self.sii_status_var = tk.StringVar(value="")
+        ttk.Label(sii_row, textvariable=self.sii_status_var, font=("Consolas", 9)).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        # -- RVM section --
+        sep_rvm = ttk.Separator(results_frame, orient="horizontal")
+        sep_rvm.pack(fill=tk.X, pady=(4, 4))
+        rvm_row = ttk.Frame(results_frame)
+        rvm_row.pack(fill=tk.X, pady=2)
+        ttk.Label(rvm_row, text="RVM:", width=10, anchor=tk.E).pack(side=tk.LEFT)
+        self.rvm_btn = ttk.Button(
+            rvm_row, text="Verificar RVM", command=self._consultar_rvm, width=10
+        )
+        self.rvm_btn.pack(side=tk.LEFT, padx=2)
+        self.rvm_status_var = tk.StringVar(value="")
+        ttk.Label(rvm_row, textvariable=self.rvm_status_var, font=("Consolas", 9)).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        # -- SAP section --
+        sep2 = ttk.Separator(results_frame, orient="horizontal")
+        sep2.pack(fill=tk.X, pady=(4, 4))
+        sap_row = ttk.Frame(results_frame)
+        sap_row.pack(fill=tk.X, pady=2)
+        ttk.Label(sap_row, text="SAP:", width=10, anchor=tk.E).pack(side=tk.LEFT)
+        self.sap_btn = ttk.Button(
+            sap_row, text="Llenar SAP", command=self._sap_llenar, width=10
+        )
+        self.sap_btn.pack(side=tk.LEFT, padx=2)
+        self.sap_status_var = tk.StringVar(value="")
+        ttk.Label(sap_row, textvariable=self.sap_status_var, font=("Consolas", 9)).pack(
             side=tk.LEFT, padx=(6, 0)
         )
 
@@ -417,6 +466,165 @@ class App(tk.Tk):
         log.info("Consultando Servipag: RUT=%s, empresa=%s", rut, empresa)
         threading.Thread(target=self._do_consultar_deudas, args=(rut, empresa), daemon=True).start()
 
+    def _consultar_sii(self):
+        rut = self.result_vars["rut"].get()
+        if not rut or rut == "—":
+            log.warning("No hay RUT para consultar SII")
+            return
+        self.sii_btn.configure(state="disabled")
+        self.sii_status_var.set("Consultando SII...")
+        log.info("Consultando SII: RUT=%s", rut)
+        threading.Thread(target=self._do_consultar_sii, args=(rut,), daemon=True).start()
+
+    def _do_consultar_sii(self, rut: str):
+        try:
+            res = consultar_sii(rut)
+            self.after(0, self._mostrar_resultado_sii, res)
+        except Exception as e:
+            log.error("Error consulta SII: %s", e)
+            self.after(0, self.sii_status_var.set, f"Error: {e}")
+            self.after(0, self.sii_btn.configure, {"state": "normal"})
+
+    def _mostrar_resultado_sii(self, res: dict):
+        self.sii_btn.configure(state="normal")
+        if not res.get("success"):
+            msg = res.get("error", "Error desconocido")
+            self.sii_status_var.set("Error")
+            log.error("SII: %s", msg)
+            return
+
+        parts = []
+        if res.get("razon_social"):
+            parts.append(res["razon_social"][:50])
+        if res.get("vigente") is True:
+            parts.append("VIGENTE")
+        elif res.get("vigente") is False:
+            parts.append("NO VIGENTE")
+        if res.get("inicio_actividades"):
+            parts.append(f"inicio: {res['inicio_actividades']}")
+
+        self.sii_status_var.set("OK ✓")
+        log.info("SII: RUT=%s → %s", res.get("rut"), " | ".join(parts))
+
+        # Mostrar popup con detalle
+        self._mostrar_popup_sii(res)
+
+    def _mostrar_popup_sii(self, res: dict):
+        win = tk.Toplevel(self)
+        win.title(f"SII - RUT {res.get('rut', '')}")
+        win.geometry("550x400")
+        win.transient(self)
+        win.grab_set()
+
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text=f"Resultado SII para RUT {res.get('rut', '')}",
+                  font=("Consolas", 10, "bold")).pack(anchor=tk.W, pady=(0, 8))
+
+        text = tk.Text(frame, font=("Consolas", 10), wrap=tk.WORD, height=14)
+        text.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        fields = [
+            ("RUT:", res.get("rut", "—")),
+            ("Razón Social:", res.get("razon_social", "—")),
+            ("Vigente:", "SÍ" if res.get("vigente") is True else "NO" if res.get("vigente") is False else "—"),
+            ("Inicio Actividades:", res.get("inicio_actividades", "—")),
+            ("Registrado:", "SÍ" if res.get("registrado") is True else "NO" if res.get("registrado") is False else "—"),
+            ("Fecha Consulta:", res.get("fecha_consulta", "—")),
+        ]
+        for label, val in fields:
+            text.insert(tk.END, f"{label:20s} {val}\n")
+
+        rs_docs = self.result_vars.get("status", tk.StringVar()).get()
+        if "Razón social" in rs_docs or "social" in rs_docs.lower():
+            text.insert(tk.END, "\n⚠ Razón social con inconsistencias detectadas\n")
+
+        text.configure(state="disabled")
+
+        ttk.Button(frame, text="Cerrar", command=win.destroy).pack()
+
+    def _consultar_rvm(self):
+        archivos = []
+        for ext in ("*.pdf", "*.jpg", "*.jpeg", "*.png"):
+            archivos.extend(OUT_DIR.glob(ext))
+        if not archivos:
+            log.warning("No hay PDFs/imágenes descargados para verificar RVM")
+            self.rvm_status_var.set("Sin archivo")
+            return
+        self.rvm_btn.configure(state="disabled")
+        self.rvm_status_var.set("Verificando RVM...")
+        log.info("Verificando RVM en %s archivo(s)...", len(archivos))
+        threading.Thread(target=self._do_consultar_rvm, args=(archivos,), daemon=True).start()
+
+    def _do_consultar_rvm(self, archivos: list[Path]):
+        try:
+            for arch in archivos:
+                if arch.suffix.lower() == ".pdf":
+                    text = extract_text(arch)
+                else:
+                    text = ocr_image(arch)
+                if not text:
+                    continue
+                if "R.V.M." in text or "RVM" in text or "INSCRIPCION" in text.upper():
+                    extraccion = extraer_datos_rvm(text)
+                    if extraccion["encontrado"]:
+                        res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
+                        self.after(0, self._mostrar_resultado_rvm, res)
+                        return
+            self.after(0, self.rvm_status_var.set, "No se encontró RVM en archivos")
+            log.warning("Ningún archivo contiene datos RVM")
+        except Exception as e:
+            log.error("Error RVM: %s", e)
+            self.after(0, self.rvm_status_var.set, f"Error: {e}")
+        finally:
+            self.after(0, self.rvm_btn.configure, {"state": "normal"})
+
+    def _mostrar_resultado_rvm(self, res: dict):
+        self.rvm_btn.configure(state="normal")
+        if not res.get("success"):
+            self.rvm_status_var.set("Error")
+            return
+        if res.get("valido") is True:
+            self.rvm_status_var.set("Válido ✓")
+        elif res.get("valido") is False:
+            self.rvm_status_var.set("No válido ✗")
+        else:
+            self.rvm_status_var.set("Sin código ✗")
+        log.info("RVM: folio=%s codigo=%s valido=%s msg=%s",
+                 res.get("folio"), res.get("codigo"), res.get("valido"),
+                 res.get("mensaje"))
+
+    def _sap_llenar(self):
+        datos = {
+            "rut": self.result_vars["rut"].get(),
+            "nombre": self.result_vars["nombre"].get(),
+            "patente": self.result_vars["patente"].get(),
+            "direccion": self.result_vars["direccion"].get(),
+            "telefono": self.result_vars["telefono"].get(),
+            "email": self.result_vars["email"].get(),
+        }
+        self.sap_btn.configure(state="disabled")
+        self.sap_status_var.set("Abriendo SAP...")
+        log.info("Abriendo SAP para llenar formulario...")
+        threading.Thread(target=self._do_sap_llenar, args=(datos,), daemon=True).start()
+
+    def _do_sap_llenar(self, datos: dict):
+        try:
+            res = sap_llenar(datos=datos)
+            if res.get("success"):
+                self.after(0, self.sap_status_var.set, "OK ✓")
+                log.info("SAP: formulario llenado correctamente")
+            else:
+                msg = res.get("error", "Error desconocido")
+                self.after(0, self.sap_status_var.set, f"Error: {msg}")
+                log.error("SAP: %s", msg)
+        except Exception as e:
+            log.error("Error SAP: %s", e)
+            self.after(0, self.sap_status_var.set, f"Error: {e}")
+        finally:
+            self.after(0, self.sap_btn.configure, {"state": "normal"})
+
     def _do_consultar_deudas(self, rut: str, empresa: str):
         try:
             res = consultar_deudas(rut, empresa)
@@ -527,6 +735,12 @@ class App(tk.Tk):
             var.set("—")
         self.sp_status_var.set("")
         self.sp_btn.configure(state="normal")
+        self.sap_status_var.set("")
+        self.sap_btn.configure(state="normal")
+        self.sii_status_var.set("")
+        self.sii_btn.configure(state="normal")
+        self.rvm_status_var.set("")
+        self.rvm_btn.configure(state="normal")
         self._rut_val_label.configure(text="")
 
     def _limpiar_imagen(self):
@@ -685,6 +899,13 @@ class App(tk.Tk):
         self._mostrar_imagen_idx(self._img_idx + 1)
 
     def _do_buscar(self, desk: int):
+        # Limpiar archivos de la consulta anterior
+        if OUT_DIR.exists():
+            for f in OUT_DIR.iterdir():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
         try:
             log.info("Consultando ticket %s...", desk)
             rsc = fetch_desk_rsc(self.session, desk)
@@ -848,6 +1069,56 @@ class App(tk.Tk):
             else:
                 log.info("No se encontró fecha de emisión en PDFs")
 
+            # SII verification
+            if rut_ticket and validar_rut(rut_ticket):
+                try:
+                    log.info("Consultando SII para RUT %s...", rut_ticket)
+                    sii_res = consultar_sii(rut_ticket)
+                    if sii_res.get("success"):
+                        log.info("SII: razon_social=%s vigente=%s inicio=%s registrado=%s",
+                                 sii_res.get("razon_social"), sii_res.get("vigente"),
+                                 sii_res.get("inicio_actividades"), sii_res.get("registrado"))
+                        if sii_res.get("registrado") is False:
+                            motivos.append("RUT no registrado en SII")
+                        if sii_res.get("vigente") is False:
+                            motivos.append("NO VIGENTE en SII")
+                        sii_name = sii_res.get("razon_social")
+                        if sii_name and razones_set:
+                            sii_norm = re.sub(r'[^\w\s]', '', sii_name.upper()).strip()
+                            docs_norm = [re.sub(r'[^\w\s]', '', r) for r in razones_set]
+                            if not any(sii_norm in d or d in sii_norm for d in docs_norm):
+                                motivos.append("Razón social no coincide con SII")
+                                log.info("R.S. SII='%s' no coincide con documentos: %s",
+                                         sii_name, " | ".join(razones_set))
+                    else:
+                        log.warning("SII no disponible: %s", sii_res.get("error"))
+                except Exception as e:
+                    log.warning("Error consultando SII: %s", e)
+
+            # RVM verification (PDFs + imágenes)
+            try:
+                archivos_rvm = []
+                for ext in ("*.pdf", "*.jpg", "*.jpeg", "*.png"):
+                    archivos_rvm.extend(OUT_DIR.glob(ext))
+                for arch in archivos_rvm:
+                    if arch.suffix.lower() == ".pdf":
+                        text_rvm = extract_text(arch)
+                    else:
+                        text_rvm = ocr_image(arch)
+                    if not text_rvm:
+                        continue
+                    if "R.V.M." in text_rvm or "RVM" in text_rvm or "INSCRIPCION" in text_rvm.upper():
+                        extraccion = extraer_datos_rvm(text_rvm)
+                        if extraccion["encontrado"]:
+                            log.info("RVM extraído: folio=%s codigo=%s",
+                                     extraccion["folio"], extraccion["codigo_verificacion"])
+                            rvm_res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
+                            if rvm_res.get("success") and rvm_res.get("valido") is not True:
+                                motivos.append("Certificado RVM no válido")
+                            break
+            except Exception as e:
+                log.warning("Error verificando RVM: %s", e)
+
             rechazado = bool(motivos)
             if rechazado:
                 status_text = "RECHAZADO (" + ", ".join(motivos) + ")"
@@ -870,14 +1141,6 @@ class App(tk.Tk):
         except Exception as e:
             log.error("Error: %s", e)
         finally:
-            # Limpiar PDFs/imagenes descargados
-            if OUT_DIR.exists():
-                for f in OUT_DIR.iterdir():
-                    try:
-                        f.unlink()
-                    except Exception:
-                        pass
-                log.info("Carpeta %s limpiada", OUT_DIR)
             self.after(0, self._set_busy, False)
 
 

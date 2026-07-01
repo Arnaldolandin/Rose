@@ -20,8 +20,10 @@ import argparse
 from datetime import datetime, date
 import json
 import logging
+import os
 import re
 import sys
+import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -369,10 +371,62 @@ def extract_text(path: Path) -> str:
             reader = PyPDF2.PdfReader(f)
             text = "\n".join(p.extract_text() or "" for p in reader.pages)
         log.info("  Texto: %s chars, %s paginas", len(text), len(reader.pages))
+        # Si no hay texto, intentar extraer imágenes embebidas y OCR
+        if not text.strip():
+            log.info("  PDF sin texto, extrayendo imágenes para OCR...")
+            text = _ocr_pdf_images(reader)
         return text
     except Exception as e:
         log.warning("  Error en %s: %s", path.name, e)
         return ""
+
+
+def _ocr_pdf_images(reader) -> str:
+    """Extrae imágenes embebidas de cada página del PDF y las OCR con Tesseract."""
+    texts = []
+    for i, page in enumerate(reader.pages):
+        try:
+            raw = page.get('/Resources')
+            if raw is None:
+                continue
+            # raw puede ser IndirectObject → resolver con get_object()
+            resources = raw.get_object() if hasattr(raw, 'get_object') else raw
+            xobjects = resources.get('/XObject', {})
+            for xname in xobjects:
+                xobj = xobjects[xname].get_object()
+                if xobj.get('/Subtype') != '/Image':
+                    continue
+                data = xobj.get_data()
+                if not data:
+                    continue
+                # Verificar si es JPEG (DCTDecode) u otro formato
+                if data[:2] == b'\xff\xd8':  # JPEG
+                    ext = "jpg"
+                else:
+                    ext = "png"
+                fd, img_path_str = tempfile.mkstemp(suffix=f".{ext}")
+                img_path = Path(img_path_str)
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                try:
+                    img_path.write_bytes(data)
+                    if pytesseract:
+                        ocr_t = ocr_image(img_path)
+                        if ocr_t.strip():
+                            texts.append(ocr_t)
+                finally:
+                    try:
+                        img_path.unlink()
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.warning("  Error extrayendo imagen página %s: %s", i, e)
+    combined = "\n".join(texts)
+    if combined:
+        log.info("  OCR de imágenes: %s chars", len(combined))
+    return combined
 
 
 def find_ruts(text: str) -> list[str]:
@@ -689,6 +743,69 @@ def procesar_ticket(
         dias = (hoy - fecha_emision).days
         if dias > 30:
             motivos.append(f"Documento vencido ({dias} días)")
+
+    # SII verification (documentos tributarios verificables en SII)
+    sii_resultado = None
+    if rut_ticket and validar_rut(rut_ticket):
+        try:
+            from sii import consultar_sii
+            log.info("Consultando SII para RUT %s...", rut_ticket)
+            sii_resultado = consultar_sii(rut_ticket)
+            if sii_resultado.get("success"):
+                log.info("SII: razon_social=%s vigente=%s inicio=%s registrado=%s",
+                         sii_resultado.get("razon_social"),
+                         sii_resultado.get("vigente"),
+                         sii_resultado.get("inicio_actividades"),
+                         sii_resultado.get("registrado"))
+                if sii_resultado.get("registrado") is False:
+                    motivos.append("RUT no registrado en SII")
+                if sii_resultado.get("vigente") is False:
+                    motivos.append("NO VIGENTE en SII")
+                # Verificar consistencia de razón social
+                sii_name = sii_resultado.get("razon_social")
+                if sii_name and razones_set:
+                    sii_norm = re.sub(r'[^\w\s]', '', sii_name.upper()).strip()
+                    docs_norm = [re.sub(r'[^\w\s]', '', r) for r in razones_set]
+                    if not any(sii_norm in d or d in sii_norm for d in docs_norm):
+                        motivos.append("Razón social no coincide con SII")
+                        log.info("R.S. SII='%s' no coincide con documentos: %s",
+                                 sii_name, " | ".join(razones_set))
+            else:
+                log.warning("SII no disponible: %s", sii_resultado.get("error"))
+        except Exception as e:
+            log.warning("Error consultando SII: %s", e)
+
+    result["sii"] = sii_resultado
+
+    # RVM verification (Certificado de Inscripción R.V.M. en Registro Civil)
+    rvm_resultado = None
+    try:
+        for pdf_path in out_dir.glob("*.pdf"):
+            text_rvm = extract_text(pdf_path)
+            if not text_rvm:
+                continue
+            if "R.V.M." in text_rvm or "RVM" in text_rvm or "INSCRIPCION" in text_rvm.upper():
+                from rvm import extraer_datos_rvm, verificar_rvm
+                extraccion = extraer_datos_rvm(text_rvm)
+                if extraccion["encontrado"]:
+                    log.info("RVM extraído: folio=%s codigo=%s",
+                             extraccion["folio"], extraccion["codigo_verificacion"])
+                    rvm_resultado = verificar_rvm(
+                        extraccion["folio"], extraccion["codigo_verificacion"]
+                    )
+                    if rvm_resultado.get("success"):
+                        if rvm_resultado.get("valido") is True:
+                            log.info("RVM: CERTIFICADO VÁLIDO ✓")
+                        else:
+                            motivos.append("Certificado RVM no válido")
+                            log.info("RVM: certificado no válido")
+                    else:
+                        log.warning("RVM no disponible: %s", rvm_resultado.get("error"))
+                    break  # Solo procesar el primer RVM encontrado
+    except Exception as e:
+        log.warning("Error verificando RVM: %s", e)
+
+    result["rvm"] = rvm_resultado
 
     rechazado = bool(motivos)
     if rechazado:
