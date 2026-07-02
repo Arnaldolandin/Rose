@@ -250,8 +250,48 @@ def _extraer_total(text: str) -> Optional[float]:
     return None
 
 
-def consultar_deudas(rut: str, empresa: str = "Pago Total TAG", headless: bool = False) -> dict:
-    return asyncio.run(consultar_deudas_async(rut, empresa, headless=headless))
+def _fallo_reintentable(res: dict) -> bool:
+    """True si el resultado parece un fallo transitorio y vale reintentar.
+
+    NO reintenta ante un resultado definitivo (sin deudas o deudas encontradas)
+    ni ante errores de configuración (Chrome/Playwright ausente, empresa mala).
+    SÍ reintenta ante error genérico/Cloudflare o cuando el portal no halló el
+    RUT (posible carrera de render, aunque wait_for_selector ya la mitiga).
+    """
+    err = (res.get("error") or "").lower()
+    if any(x in err for x in ("chrome no encontrado", "empresa desconocida",
+                              "playwright no instalado")):
+        return False
+    if not res.get("success"):
+        return True
+    if res.get("sin_deudas") or res.get("deudas"):
+        return False
+    raw = (res.get("raw_text") or "").lower()
+    return "no encontrado" in raw or "no se encontr" in raw
+
+
+def consultar_deudas(
+    rut: str,
+    empresa: str = "Pago Total TAG",
+    headless: bool = False,
+    intentos: int = 2,
+) -> dict:
+    """Consulta deudas con reintento automático ante fallos transitorios.
+
+    Cada intento relanza Chrome limpio (user-data-dir propio), así que no hay
+    estado residual entre intentos.
+    """
+    res: dict = {}
+    for intento in range(1, intentos + 1):
+        res = asyncio.run(consultar_deudas_async(rut, empresa, headless=headless))
+        if not _fallo_reintentable(res):
+            return res
+        if intento < intentos:
+            log.warning(
+                "Servipag intento %s/%s no concluyente (%s); reintentando...",
+                intento, intentos, res.get("error") or "sin resultado",
+            )
+    return res
 
 
 if __name__ == "__main__":

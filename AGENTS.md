@@ -192,3 +192,10 @@ Refactors de rendimiento y mantenibilidad. **No** se tocó la lógica de estado
 - Solo servipag estaba afectado: los otros módulos lanzan Chrome sin URL y hacen
   `page.goto(url, wait_until="load")` tras conectar, así que la carga siempre se
   espera bajo control de Playwright.
+- **Red de seguridad — reintento automático** (`servipag.py`): `consultar_deudas()`
+  ahora reintenta (default `intentos=2`) ante fallos transitorios vía
+  `_fallo_reintentable()`. Reintenta si: `success=False` (error genérico/Cloudflare)
+  o el `raw_text` dice "no encontrado". NO reintenta ante resultado definitivo
+  (sin deudas o deudas encontradas) ni errores de config (Chrome/Playwright
+  ausente, empresa desconocida). Cada intento relanza Chrome limpio. Firma
+  compatible (gui/bot no cambian).
