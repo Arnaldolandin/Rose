@@ -89,3 +89,22 @@ python gui.py                  # GUI con input de ticket + foto + log
 - `gui.py`: interfaz grafica, boton Copiar, validacion RUT, foto, navegacion, log toggle, pegar
 - `.exe` standalone (PyInstaller), RUT sin puntos/guion al copiar
 - Push a `github.com/Arnaldolandin/integro-rut-bot`
+
+## Session: 2026-07-01 — robos + RUT/NO_VIGENTE false positive fixes
+
+### Cambios
+- **`robos.py`** (nuevo): consulta encargo por robo en autoseguro.gob.cl vía Chrome CDP + Playwright.
+  - Bypass reCAPTCHA con `Object.defineProperty` trap en `__bypassCaptchaValidation`.
+  - Detección por safe keywords ("no mantiene") y robo keywords ("sustraído", "robado").
+- **`gui.py`**: botón "Verificar Robo" + auto-check en `_do_buscar`.
+- **`gui.py`**: RUT consistency ahora verifica que el ticket RUT esté presente en docs, no cuenta RUTs totales.
+- **`bot.py`**: `check_vigente_optimo` — similitud ≥ 90% sobreescribe `no_vigente=False`.
+- **`gui.py`**+**`bot.py`**: logging de `check_vigente_optimo` por documento y `status_global`.
+
+### Problemas resueltos
+1. **RUT inconsistente** (498926): documento con RUTs de adquiriente + empresa. Fix: verifica presencia del ticket RUT.
+2. **NO VIGENTE** (498928): similitud 99.94% + "NO VIGENTE" de otro contexto. Fix: similitud ≥ 90% es autoritativa.
+3. **reCAPTCHA autoseguro**: bypass con `Object.defineProperty`.
+
+### HEAD
+`a89563a` robos: theft check integration with captcha bypass, RUT/NO_VIGENTE false positive fixes

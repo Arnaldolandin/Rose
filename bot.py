@@ -399,28 +399,68 @@ def _ocr_pdf_images(reader) -> str:
                 data = xobj.get_data()
                 if not data:
                     continue
-                # Verificar si es JPEG (DCTDecode) u otro formato
-                if data[:2] == b'\xff\xd8':  # JPEG
-                    ext = "jpg"
-                else:
-                    ext = "png"
-                fd, img_path_str = tempfile.mkstemp(suffix=f".{ext}")
-                img_path = Path(img_path_str)
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-                try:
-                    img_path.write_bytes(data)
-                    if pytesseract:
-                        ocr_t = ocr_image(img_path)
-                        if ocr_t.strip():
-                            texts.append(ocr_t)
-                finally:
+                # JPEG directo (DCTDecode)
+                if data[:2] == b'\xff\xd8':
+                    fd, img_path_str = tempfile.mkstemp(suffix=".jpg")
+                    img_path = Path(img_path_str)
                     try:
-                        img_path.unlink()
+                        os.close(fd)
                     except Exception:
                         pass
+                    try:
+                        img_path.write_bytes(data)
+                        if pytesseract:
+                            ocr_t = ocr_image(img_path)
+                            if ocr_t.strip():
+                                texts.append(ocr_t)
+                    finally:
+                        try:
+                            img_path.unlink()
+                        except Exception:
+                            pass
+                else:
+                    # FlateDecode u otro: raw pixel data, construir PIL Image
+                    w = xobj.get('/Width')
+                    h = xobj.get('/Height')
+                    bpc = xobj.get('/BitsPerComponent', 8)
+                    if not w or not h:
+                        continue
+                    # Determinar modo según color space
+                    cs = xobj.get('/ColorSpace')
+                    if cs is not None:
+                        if hasattr(cs, 'get_object'):
+                            cs = cs.get_object()
+                    if isinstance(cs, list) and cs[0] == '/ICCBased':
+                        mode = "RGB"
+                    elif cs == '/DeviceRGB':
+                        mode = "RGB"
+                    elif cs == '/DeviceGray':
+                        mode = "L"
+                    elif cs == '/DeviceCMYK':
+                        mode = "CMYK"
+                    else:
+                        mode = "RGB"  # default
+                    try:
+                        img = Image.frombuffer(mode, (w, h), data, "raw", mode, 0, 1)
+                        fd, img_path_str = tempfile.mkstemp(suffix=".png")
+                        img_path = Path(img_path_str)
+                        try:
+                            os.close(fd)
+                        except Exception:
+                            pass
+                        try:
+                            img.save(img_path, format="PNG")
+                            if pytesseract:
+                                ocr_t = ocr_image(img_path)
+                                if ocr_t.strip():
+                                    texts.append(ocr_t)
+                        finally:
+                            try:
+                                img_path.unlink()
+                            except Exception:
+                                pass
+                    except Exception as e2:
+                        log.warning("  Error construyendo imagen pág %s %s: %s", i, xname, e2)
         except Exception as e:
             log.warning("  Error extrayendo imagen página %s: %s", i, e)
     combined = "\n".join(texts)

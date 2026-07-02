@@ -5,7 +5,7 @@ import threading
 import sys
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, messagebox
 import io
 import os
 
@@ -1157,7 +1157,11 @@ class App(tk.Tk):
             else:
                 log.info("No se encontró fecha de emisión en PDFs")
 
+            reporte = [f"Ticket: {desk}"]
+            reporte.append(f"RUT: {rut_ticket or '—'}")
+
             # SII verification
+            sii_report = "SII: —"
             if rut_ticket and validar_rut(rut_ticket):
                 try:
                     log.info("Consultando SII para RUT %s...", rut_ticket)
@@ -1167,12 +1171,23 @@ class App(tk.Tk):
                         log.info("SII: razon_social=%s vigente=%s inicio=%s registrado=%s",
                                  sii_res.get("razon_social"), sii_res.get("vigente"),
                                  sii_res.get("inicio_actividades"), sii_res.get("registrado"))
-                        if sii_res.get("registrado") is False:
-                            motivos.append("RUT no registrado en SII")
-                        if sii_res.get("vigente") is False:
+                        partes = []
+                        nombre_sii = sii_res.get("razon_social")
+                        if nombre_sii and nombre_sii != "**":
+                            partes.append(nombre_sii[:50])
+                        if sii_res.get("vigente") is True:
+                            partes.append("VIGENTE")
+                        elif sii_res.get("vigente") is False:
+                            partes.append("NO VIGENTE")
                             motivos.append("NO VIGENTE en SII")
+                        if sii_res.get("inicio_actividades"):
+                            partes.append(f"ini:{sii_res['inicio_actividades']}")
+                        if sii_res.get("registrado") is False:
+                            partes.append("NO REGISTRADO")
+                            motivos.append("RUT no registrado en SII")
+                        sii_report = "SII: " + (" | ".join(partes) if partes else "OK")
                         sii_name = sii_res.get("razon_social")
-                        if sii_name and razones_set:
+                        if sii_name and sii_name != "**" and razones_set:
                             sii_norm = re.sub(r'[^\w\s]', '', sii_name.upper()).strip()
                             docs_norm = [re.sub(r'[^\w\s]', '', r) for r in razones_set]
                             if not any(sii_norm in d or d in sii_norm for d in docs_norm):
@@ -1180,11 +1195,15 @@ class App(tk.Tk):
                                 log.info("R.S. SII='%s' no coincide con documentos: %s",
                                          sii_name, " | ".join(razones_set))
                     else:
+                        sii_report = f"SII: Error ({sii_res.get('error', 'desconocido')})"
                         log.warning("SII no disponible: %s", sii_res.get("error"))
                 except Exception as e:
+                    sii_report = f"SII: Error ({e})"
                     log.warning("Error consultando SII: %s", e)
+            reporte.append(sii_report)
 
             # RVM verification (PDFs + imágenes)
+            rvm_report = "RVM: —"
             try:
                 archivos_rvm = []
                 for ext in ("*.pdf", "*.jpg", "*.jpeg", "*.png"):
@@ -1196,20 +1215,30 @@ class App(tk.Tk):
                         text_rvm = ocr_image(arch)
                     if not text_rvm:
                         continue
-                    if "R.V.M." in text_rvm or "RVM" in text_rvm or "INSCRIPCION" in text_rvm.upper():
+                    tiene_rvm_kw = "R.V.M." in text_rvm or "RVM" in text_rvm or "INSCRIPCION" in text_rvm.upper()
+                    log.info("  RVM scan %s (%d chars): keywords=%s", arch.name, len(text_rvm), tiene_rvm_kw)
+                    if tiene_rvm_kw:
                         extraccion = extraer_datos_rvm(text_rvm)
                         if extraccion["encontrado"]:
                             log.info("RVM extraído: folio=%s codigo=%s",
                                      extraccion["folio"], extraccion["codigo_verificacion"])
                             with self._chrome_lock:
                                 rvm_res = verificar_rvm(extraccion["folio"], extraccion["codigo_verificacion"])
-                            if rvm_res.get("success") and rvm_res.get("valido") is not True:
+                            if rvm_res.get("success") and rvm_res.get("valido") is True:
+                                rvm_report = "RVM: Válido ✓"
+                            elif rvm_res.get("success") and rvm_res.get("valido") is False:
+                                rvm_report = "RVM: No válido ✗"
                                 motivos.append("Certificado RVM no válido")
+                            else:
+                                rvm_report = "RVM: " + (rvm_res.get("mensaje") or "Error")
                             break
             except Exception as e:
+                rvm_report = f"RVM: Error ({e})"
                 log.warning("Error verificando RVM: %s", e)
+            reporte.append(rvm_report)
 
             # Robo verification
+            robo_report = "Robo: —"
             patente = self.result_vars["patente"].get()
             if patente and patente != "—":
                 try:
@@ -1218,14 +1247,25 @@ class App(tk.Tk):
                         robo_res = consultar_robo(patente)
                     if robo_res.get("success"):
                         if robo_res.get("robado") is True:
+                            robo_report = f"Robo: ROBADO ✗ ({robo_res.get('detalle', '')})"
                             motivos.append("Patente con encargo por robo")
                             log.warning("Patente ROBADA: %s", robo_res.get("detalle", ""))
                         else:
+                            robo_report = "Robo: Sin encargo ✓"
                             log.info("Patente sin encargo por robo")
                     else:
+                        robo_report = f"Robo: Error ({robo_res.get('error', 'desconocido')})"
                         log.warning("Consulta robo no disponible: %s", robo_res.get("error"))
                 except Exception as e:
+                    robo_report = f"Robo: Error ({e})"
                     log.warning("Error consultando robo: %s", e)
+            reporte.append(robo_report)
+
+            if sim is not None:
+                reporte.append(f"Similitud: {sim:.2f}%")
+
+            if fecha_emision:
+                reporte.append(f"Emisión: {fecha_emision}")
 
             rechazado = bool(motivos)
             if rechazado:
@@ -1237,12 +1277,42 @@ class App(tk.Tk):
             else:
                 status_text = "PENDIENTE"
                 status_color = "orange"
+            # Servipag inline
+            servipag_report = "Servipag: —"
+            if rut_ticket:
+                try:
+                    empresa = self.sp_empresa.get()
+                    log.info("Consultando Servipag: RUT=%s, empresa=%s", rut_ticket, empresa)
+                    with self._chrome_lock:
+                        sp_res = consultar_deudas(rut_ticket, empresa)
+                    if sp_res.get("success"):
+                        if sp_res.get("sin_deudas"):
+                            servipag_report = "Servipag: Sin deudas ✓"
+                        elif sp_res.get("deudas"):
+                            n = len(sp_res["deudas"])
+                            total = sum(d["monto"] for d in sp_res["deudas"])
+                            servipag_report = f"Servipag: {n} deuda(s) = ${total:,.0f}"
+                            if total >= 1_000_000:
+                                motivos.append("Deuda Servipag >= $1.000.000")
+                            log.info("  Deudas %s para %s en %s",
+                                     n, rut_ticket, empresa)
+                            for d in sp_res["deudas"]:
+                                log.info("  - %s", d.get("descripcion", ""))
+                        else:
+                            servipag_report = "Servipag: Sin resultados"
+                    else:
+                        servipag_report = f"Servipag: Error ({sp_res.get('error', 'desconocido')})"
+                except Exception as e:
+                    servipag_report = f"Servipag: Error ({e})"
+                    log.warning("Error consultando Servipag: %s", e)
+            reporte.append(servipag_report)
+
+            reporte.insert(0, f"► {status_text}")
             log.info("Status: %s", status_text)
             self.after(0, self._set_status, status_text, status_color)
-
-            if status_text == "APROBADO":
-                log.info("Status APROBADO → consultando Servipag automáticamente")
-                self.after(500, self._consultar_deudas)
+            self.after(100, lambda r="\n".join(reporte): messagebox.showinfo(
+                "Reporte", r) if "RECHAZADO" not in r else messagebox.showwarning(
+                "Reporte", r))
 
             log.info("Listo.")
 
