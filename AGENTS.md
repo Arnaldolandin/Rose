@@ -175,3 +175,20 @@ Refactors de rendimiento y mantenibilidad. **No** se tocó la lógica de estado
 - **Riesgo**: el `Semaphore(2)` afloja el mutex que `f1c8b99` agregó para evitar
   conflictos de Chrome entre threads. Si aparecen cuelgues/fallos esporádicos de
   conexión CDP, volver a `Lock()`. Pendiente: prueba contra tickets reales.
+
+### 2026-07-02 (cont.) — Servipag: "RUT no encontrado" intermitente
+
+- **Causa**: efecto colateral del cambio `time.sleep(8)` → `wait_for_cdp()`.
+  Servipag lanza Chrome CON la URL (`url=SERVIPAG_URL`), así que la página carga
+  sola; el `sleep(8)` daba margen para que la SPA renderizara. `wait_for_cdp`
+  retorna apenas responde el puerto de debug (~1-2s) y, como la URL ya es
+  servipag, el flujo se saltaba el `goto`/espera y consultaba el selector de
+  empresa / campo RUT antes de que existieran → el portal respondía "RUT no
+  encontrado". Flaky: al reintentar, la SPA ya estaba caliente.
+- **Fix** (`servipag.py`): tras el chequeo de Cloudflare, esperar explícitamente
+  `page.wait_for_selector("#card-lib-rut-change", timeout=30000)` antes de
+  interactuar. Más robusto que el sleep fijo (espera lo necesario, no un tiempo
+  arbitrario) y conserva el ahorro de `wait_for_cdp`.
+- Solo servipag estaba afectado: los otros módulos lanzan Chrome sin URL y hacen
+  `page.goto(url, wait_until="load")` tras conectar, así que la carga siempre se
+  espera bajo control de Playwright.

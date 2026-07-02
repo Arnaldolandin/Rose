@@ -116,6 +116,17 @@ async def consultar_deudas_async(
                 log.warning("Cloudflare bloqueó")
                 return result
 
+            # Esperar a que la SPA renderice el formulario antes de interactuar.
+            # Chrome se lanza CON la URL, así que no hay goto que espere 'load', y
+            # wait_for_cdp sólo confirma que el puerto de debug responde (no que la
+            # página cargó). Sin esta espera, la consulta corre antes de que
+            # aparezcan el selector de empresa / campo RUT → el portal responde
+            # "RUT no encontrado" (flaky: al reintentar la SPA ya está caliente).
+            try:
+                await page.wait_for_selector("#card-lib-rut-change", timeout=30000)
+            except Exception:
+                log.warning("Timeout esperando el formulario de Servipag")
+
             sel = await page.query_selector("#card-lib-selectCompany-change")
             if sel:
                 await sel.select_option(empresa_val)
