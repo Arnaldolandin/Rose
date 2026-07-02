@@ -152,3 +152,26 @@ Refactors de rendimiento y mantenibilidad. **No** se tocó la lógica de estado
 - AST + import de los 8 módulos OK. Sin referencias colgantes a
   `subprocess`/`socket`/`_find_free_port`/`time.sleep`/`tempfile` en el código de
   lanzamiento de Chrome. Pendiente: prueba manual contra un ticket real.
+
+### 2026-07-02 (cont.) — Normalización de patente + Robo/Servipag en paralelo
+
+- **`bot.py` — `normalizar_patente()`**: nueva función que limpia la patente a su
+  forma canónica chilena. Bug reportado: a veces la patente sale con símbolos
+  intercalados (ej. `CYRD.72-1`) y autoseguro.gob.cl responde "matrícula no
+  válida para Chile". Heurística: si hay separador de ruido (punto/·/espacio) se
+  asume basura y se reduce a la matrícula de 6 chars (`CYRD72`); una patente ya
+  limpia con sufijo interno (`PYKS20-4`) se conserva. **No** se tocó `PATENTE_RE`
+  (sigue capturando el formato interno). Aplicada en `find_patentes` (por match),
+  en `procesar_ticket` (`result["patente"]`) y en `gui.py` al mostrar la patente
+  del ticket. `gui.py` importa `normalizar_patente`.
+- **`gui.py` — Robo + Servipag en paralelo**: `_chrome_lock` pasó de `Lock()` a
+  `Semaphore(2)` (permite 2 Chrome CDP simultáneos; cada módulo ya usa su propio
+  `--user-data-dir`/puerto). En el flujo de reporte, Robo y Servipag se lanzan en
+  dos threads a la vez. **Se preserva el orden semántico**: Robo se `join`ea ANTES
+  de calcular `status_text` (su motivo "encargo por robo" afecta el resultado);
+  Servipag se `join`ea DESPUÉS (su motivo de deuda no altera el status ya
+  calculado, igual que antes). SII y RVM siguen en serie (SII cae en cola
+  Queue-it). Ahorro ~15-20s por ticket APROBADO.
+- **Riesgo**: el `Semaphore(2)` afloja el mutex que `f1c8b99` agregó para evitar
+  conflictos de Chrome entre threads. Si aparecen cuelgues/fallos esporádicos de
+  conexión CDP, volver a `Lock()`. Pendiente: prueba contra tickets reales.

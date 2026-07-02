@@ -528,14 +528,47 @@ def find_nombres(text: str) -> list[str]:
     return result
 
 
+def normalizar_patente(raw: str) -> str:
+    """Normaliza una patente chilena a su forma canónica sin símbolos.
+
+    Formatos Chile: nueva 4 letras + 2 dígitos (CYRD72), antigua 2 letras +
+    3-4 dígitos (BB1234), interna 4L2N + guion-dígito (PYKS20-4).
+
+    Si la extracción trae separadores de ruido (punto, ·, espacio) —ej.
+    'CYRD.72-1'— se asume basura intercalada y se reduce a la matrícula
+    canónica de 6 caracteres ('CYRD72'). Una patente ya limpia con sufijo
+    interno ('PYKS20-4') se conserva. Portales como autoseguro.gob.cl rechazan
+    la matrícula si lleva símbolos.
+    """
+    if not raw:
+        return raw
+    s = raw.strip().upper()
+    # ¿tenía separadores de ruido intercalados? -> extracción sucia
+    messy = bool(re.search(r"[.·\s_]", s))
+    # dejar solo letras, dígitos y guion
+    s = re.sub(r"[^A-Z0-9-]", "", s)
+    if messy:
+        s = s.replace("-", "")
+        m = re.match(r"^([A-Z]{4}\d{2}|[A-Z]{2}\d{3,4})", s)
+        return m.group(0) if m else s
+    # ya limpia: conservar formato (incl. interno 4L2N-N)
+    m = re.match(r"^([A-Z]{4})-?(\d{2})(-[\dK])?$", s)
+    if m:
+        return m.group(1) + m.group(2) + (m.group(3) or "")
+    m = re.match(r"^([A-Z]{2})-?(\d{3,4})$", s)
+    if m:
+        return m.group(1) + m.group(2)
+    return s.replace("-", "")
+
+
 def find_patentes(text: str) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for raw in PATENTE_RE.findall(text):
-        raw = raw.strip().upper()
-        if raw and raw not in seen:
-            seen.add(raw)
-            result.append(raw)
+        norm = normalizar_patente(raw)
+        if norm and norm not in seen:
+            seen.add(norm)
+            result.append(norm)
     return result
 
 
@@ -691,7 +724,7 @@ def procesar_ticket(
 
     result["rut"] = rut_ticket
     result["nombre"] = nombre_ticket
-    result["patente"] = patente_ticket
+    result["patente"] = normalizar_patente(patente_ticket)
     result["email"] = email_ticket
 
     # Procesar PDFs

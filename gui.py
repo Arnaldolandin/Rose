@@ -22,6 +22,7 @@ from bot import (
     find_nombres,
     find_ruts,
     find_patentes,
+    normalizar_patente,
     find_razon_social,
     find_telefono,
     find_direccion,
@@ -83,7 +84,10 @@ class App(tk.Tk):
         self.session: requests.Session | None = None
         self._busy = False
         self._buscar_lock = threading.Lock()
-        self._chrome_lock = threading.Lock()
+        # Semaphore(2): permite hasta 2 Chrome CDP simultáneos (cada módulo usa su
+        # propio --user-data-dir/puerto). Habilita correr Robo+Servipag en paralelo
+        # (portales distintos). Antes era Lock() = 1 a la vez.
+        self._chrome_lock = threading.Semaphore(2)
         self._img_urls: list[str] = []
         self._img_idx = -1
         # Lupa (magnifying glass)
@@ -1004,7 +1008,7 @@ class App(tk.Tk):
                 self.after(0, self.result_vars["rut"].set, rut_ticket)
                 self.after(0, self._actualizar_rut_val, rut_ticket)
             if patente_ticket:
-                self.after(0, self.result_vars["patente"].set, patente_ticket)
+                self.after(0, self.result_vars["patente"].set, normalizar_patente(patente_ticket))
             if direccion_ticket:
                 self.after(0, self.result_vars["direccion"].set, direccion_ticket)
             if telefono_ticket:
@@ -1237,28 +1241,62 @@ class App(tk.Tk):
                 log.warning("Error verificando RVM: %s", e)
             reporte.append(rvm_report)
 
-            # Robo verification
-            robo_report = "Robo: —"
+            # --- Robo + Servipag en paralelo (portales distintos, Chrome propio) ---
+            # Semaphore(2) permite 2 Chrome simultáneos. Robo se junta ANTES de
+            # calcular el status (su motivo lo afecta); Servipag DESPUÉS (igual
+            # que antes: su motivo no altera el status_text ya calculado).
+            # Los valores de Tk se leen aquí (hilo actual) y se pasan a los hilos.
             patente = self.result_vars["patente"].get()
-            if patente and patente != "—":
+            sp_empresa_val = self.sp_empresa.get()
+
+            robo_holder: dict = {}
+
+            def _run_robo():
+                if not patente or patente == "—":
+                    return
                 try:
                     log.info("Consultando robo para patente %s...", patente)
                     with self._chrome_lock:
-                        robo_res = consultar_robo(patente)
-                    if robo_res.get("success"):
-                        if robo_res.get("robado") is True:
-                            robo_report = f"Robo: ROBADO ✗ ({robo_res.get('detalle', '')})"
-                            motivos.append("Patente con encargo por robo")
-                            log.warning("Patente ROBADA: %s", robo_res.get("detalle", ""))
-                        else:
-                            robo_report = "Robo: Sin encargo ✓"
-                            log.info("Patente sin encargo por robo")
-                    else:
-                        robo_report = f"Robo: Error ({robo_res.get('error', 'desconocido')})"
-                        log.warning("Consulta robo no disponible: %s", robo_res.get("error"))
+                        robo_holder["res"] = consultar_robo(patente)
                 except Exception as e:
-                    robo_report = f"Robo: Error ({e})"
-                    log.warning("Error consultando robo: %s", e)
+                    robo_holder["error"] = e
+
+            sp_holder: dict = {}
+
+            def _run_sp():
+                if not rut_ticket:
+                    return
+                try:
+                    log.info("Consultando Servipag: RUT=%s, empresa=%s", rut_ticket, sp_empresa_val)
+                    with self._chrome_lock:
+                        sp_holder["res"] = consultar_deudas(rut_ticket, sp_empresa_val)
+                except Exception as e:
+                    sp_holder["error"] = e
+
+            robo_thread = threading.Thread(target=_run_robo, daemon=True)
+            sp_thread = threading.Thread(target=_run_sp, daemon=True)
+            robo_thread.start()
+            sp_thread.start()
+
+            # Robo: se junta antes del status (su motivo afecta el resultado)
+            robo_report = "Robo: —"
+            robo_thread.join()
+            if "error" in robo_holder:
+                robo_report = f"Robo: Error ({robo_holder['error']})"
+                log.warning("Error consultando robo: %s", robo_holder["error"])
+            elif "res" in robo_holder:
+                robo_res = robo_holder["res"]
+                if robo_res.get("success"):
+                    if robo_res.get("robado") is True:
+                        robo_report = f"Robo: ROBADO ✗ ({robo_res.get('detalle', '')})"
+                        motivos.append("Patente con encargo por robo")
+                        log.warning("Patente ROBADA: %s", robo_res.get("detalle", ""))
+                    else:
+                        robo_report = "Robo: Sin encargo ✓"
+                        log.info("Patente sin encargo por robo")
+                else:
+                    robo_report = f"Robo: Error ({robo_res.get('error', 'desconocido')})"
+                    log.warning("Consulta robo no disponible: %s", robo_res.get("error"))
             reporte.append(robo_report)
 
             if sim is not None:
@@ -1277,34 +1315,32 @@ class App(tk.Tk):
             else:
                 status_text = "PENDIENTE"
                 status_color = "orange"
-            # Servipag inline
+            # Servipag: se junta DESPUÉS del status (lanzado en paralelo con Robo).
+            # Su motivo (deuda) no altera el status_text ya calculado, igual que antes.
             servipag_report = "Servipag: —"
-            if rut_ticket:
-                try:
-                    empresa = self.sp_empresa.get()
-                    log.info("Consultando Servipag: RUT=%s, empresa=%s", rut_ticket, empresa)
-                    with self._chrome_lock:
-                        sp_res = consultar_deudas(rut_ticket, empresa)
-                    if sp_res.get("success"):
-                        if sp_res.get("sin_deudas"):
-                            servipag_report = "Servipag: Sin deudas ✓"
-                        elif sp_res.get("deudas"):
-                            n = len(sp_res["deudas"])
-                            total = sum(d["monto"] for d in sp_res["deudas"])
-                            servipag_report = f"Servipag: {n} deuda(s) = ${total:,.0f}"
-                            if total >= 1_000_000:
-                                motivos.append("Deuda Servipag >= $1.000.000")
-                            log.info("  Deudas %s para %s en %s",
-                                     n, rut_ticket, empresa)
-                            for d in sp_res["deudas"]:
-                                log.info("  - %s", d.get("descripcion", ""))
-                        else:
-                            servipag_report = "Servipag: Sin resultados"
+            sp_thread.join()
+            if "error" in sp_holder:
+                servipag_report = f"Servipag: Error ({sp_holder['error']})"
+                log.warning("Error consultando Servipag: %s", sp_holder["error"])
+            elif "res" in sp_holder:
+                sp_res = sp_holder["res"]
+                if sp_res.get("success"):
+                    if sp_res.get("sin_deudas"):
+                        servipag_report = "Servipag: Sin deudas ✓"
+                    elif sp_res.get("deudas"):
+                        n = len(sp_res["deudas"])
+                        total = sum(d["monto"] for d in sp_res["deudas"])
+                        servipag_report = f"Servipag: {n} deuda(s) = ${total:,.0f}"
+                        if total >= 1_000_000:
+                            motivos.append("Deuda Servipag >= $1.000.000")
+                        log.info("  Deudas %s para %s en %s",
+                                 n, rut_ticket, sp_empresa_val)
+                        for d in sp_res["deudas"]:
+                            log.info("  - %s", d.get("descripcion", ""))
                     else:
-                        servipag_report = f"Servipag: Error ({sp_res.get('error', 'desconocido')})"
-                except Exception as e:
-                    servipag_report = f"Servipag: Error ({e})"
-                    log.warning("Error consultando Servipag: %s", e)
+                        servipag_report = "Servipag: Sin resultados"
+                else:
+                    servipag_report = f"Servipag: Error ({sp_res.get('error', 'desconocido')})"
             reporte.append(servipag_report)
 
             reporte.insert(0, f"► {status_text}")
