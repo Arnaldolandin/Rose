@@ -292,8 +292,40 @@ async def verificar_rvm_async(
     return result
 
 
-def verificar_rvm(folio: str, codigo: str, keep_open: bool = False) -> dict:
-    return asyncio.run(verificar_rvm_async(folio, codigo, keep_open=keep_open))
+def _fallo_reintentable(res: dict) -> bool:
+    """True si el resultado RVM parece un fallo transitorio (vale reintentar).
+
+    Reintenta ante `success=False` (campo folio/código no encontrado, excepciones)
+    o cuando el modal de resultado no apareció (`mensaje="No se pudo determinar"`).
+    NO reintenta ante errores de configuración (Chrome/Playwright ausente), ni ante
+    un veredicto definitivo (válido / no válido), ni cuando faltaba el código
+    (success=True, valido=None: caso definitivo "verificar manualmente").
+    """
+    err = (res.get("error") or "").lower()
+    if any(x in err for x in ("chrome no encontrado", "playwright no instalado")):
+        return False
+    if not res.get("success"):
+        return True
+    return (res.get("mensaje") or "") == "No se pudo determinar"
+
+
+def verificar_rvm(folio: str, codigo: str, keep_open: bool = False, intentos: int = 2) -> dict:
+    """Verifica RVM con reintento automático ante fallos transitorios.
+
+    En modo `keep_open` (debug) no reintenta: deja el primer Chrome abierto.
+    """
+    if keep_open:
+        return asyncio.run(verificar_rvm_async(folio, codigo, keep_open=True))
+    res: dict = {}
+    for intento in range(1, intentos + 1):
+        res = asyncio.run(verificar_rvm_async(folio, codigo, keep_open=False))
+        if not _fallo_reintentable(res):
+            return res
+        if intento < intentos:
+            log.warning("RVM intento %s/%s no concluyente (%s); reintentando...",
+                        intento, intentos,
+                        res.get("error") or res.get("mensaje") or "sin resultado")
+    return res
 
 
 # ---------------------------------------------------------------------------

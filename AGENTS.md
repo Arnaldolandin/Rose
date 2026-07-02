@@ -199,3 +199,14 @@ Refactors de rendimiento y mantenibilidad. **No** se tocó la lógica de estado
   (sin deudas o deudas encontradas) ni errores de config (Chrome/Playwright
   ausente, empresa desconocida). Cada intento relanza Chrome limpio. Firma
   compatible (gui/bot no cambian).
+- **Reintento replicado a SII/RVM/Robo** (`sii.py`, `rvm.py`, `robos.py`): mismo
+  patrón, cada uno con su `_fallo_reintentable()` adaptado al shape del resultado.
+  Todos con `intentos=2` y **sin reintentar en modo `keep_open`** (debug deja el
+  primer Chrome abierto). Reintentan ante:
+  - SII: cualquier `success=False` (cola Queue-it, campo RUT ausente, datos no
+    extraídos, excepción).
+  - RVM: `success=False`, o `mensaje="No se pudo determinar"` (modal no apareció).
+    NO reintenta el caso "sin código" (success=True, valido=None) ni un veredicto
+    válido/no-válido definitivo.
+  - Robo: cualquier `success=False`.
+  - Ninguno reintenta errores de config (Chrome/Playwright ausente).

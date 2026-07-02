@@ -241,8 +241,35 @@ async def consultar_sii_async(rut: str, keep_open: bool = False) -> dict:
     return result
 
 
-def consultar_sii(rut: str, keep_open: bool = False) -> dict:
-    return asyncio.run(consultar_sii_async(rut, keep_open=keep_open))
+def _fallo_reintentable(res: dict) -> bool:
+    """True si el resultado SII parece un fallo transitorio (vale reintentar).
+
+    Reintenta ante cualquier `success=False` (cola Queue-it excedida, campo RUT
+    no encontrado, datos no extraídos, excepciones). NO reintenta ante errores de
+    configuración (Chrome/Playwright ausente).
+    """
+    err = (res.get("error") or "").lower()
+    if any(x in err for x in ("chrome no encontrado", "playwright no instalado")):
+        return False
+    return not res.get("success")
+
+
+def consultar_sii(rut: str, keep_open: bool = False, intentos: int = 2) -> dict:
+    """Consulta SII con reintento automático ante fallos transitorios.
+
+    En modo `keep_open` (debug) no reintenta: deja el primer Chrome abierto.
+    """
+    if keep_open:
+        return asyncio.run(consultar_sii_async(rut, keep_open=True))
+    res: dict = {}
+    for intento in range(1, intentos + 1):
+        res = asyncio.run(consultar_sii_async(rut, keep_open=False))
+        if not _fallo_reintentable(res):
+            return res
+        if intento < intentos:
+            log.warning("SII intento %s/%s no concluyente (%s); reintentando...",
+                        intento, intentos, res.get("error") or "sin datos")
+    return res
 
 
 if __name__ == "__main__":

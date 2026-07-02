@@ -151,5 +151,27 @@ async def consultar_robo_async(patente: str) -> dict:
     return result
 
 
-def consultar_robo(patente: str) -> dict:
-    return asyncio.run(consultar_robo_async(patente))
+def _fallo_reintentable(res: dict) -> bool:
+    """True si el resultado de robo parece un fallo transitorio (vale reintentar).
+
+    Reintenta ante cualquier `success=False` (modal no leído, excepciones). NO
+    reintenta ante errores de configuración (Chrome/Playwright ausente) ni ante un
+    veredicto definitivo (robado True/False).
+    """
+    err = (res.get("error") or "").lower()
+    if any(x in err for x in ("chrome no encontrado", "playwright no instalado")):
+        return False
+    return not res.get("success")
+
+
+def consultar_robo(patente: str, intentos: int = 2) -> dict:
+    """Consulta encargo por robo con reintento automático ante fallos transitorios."""
+    res: dict = {}
+    for intento in range(1, intentos + 1):
+        res = asyncio.run(consultar_robo_async(patente))
+        if not _fallo_reintentable(res):
+            return res
+        if intento < intentos:
+            log.warning("Robo intento %s/%s no concluyente (%s); reintentando...",
+                        intento, intentos, res.get("error") or "sin resultado")
+    return res
