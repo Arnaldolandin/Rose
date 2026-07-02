@@ -106,5 +106,15 @@ python gui.py                  # GUI con input de ticket + foto + log
 2. **NO VIGENTE** (498928): similitud 99.94% + "NO VIGENTE" de otro contexto. Fix: similitud ≥ 90% es autoritativa.
 3. **reCAPTCHA autoseguro**: bypass con `Object.defineProperty`.
 
+## Session: 2026-07-01 — FlateDecode image OCR + messagebox report + Servipag inline
+
+### Cambios
+- **`bot.py`**: `_ocr_pdf_images()` — para imágenes FlateDecode (no JPEG), ahora lee `/Width`, `/Height`, `/ColorSpace` del XObject y construye `PIL.Image.frombuffer()` en vez de escribir bytes crudos como `.png` inválido.
+- **`gui.py`**: reporte final en `messagebox` con RUT, SII, RVM, Robo, Similitud, Emisión, Servipag. Servipag movido de async `after(500)` a inline con `_chrome_lock`. RVM bugfix: `rvm_res.get("mensaje", "Error")` → `rvm_res.get("mensaje") or "Error"`.
+- **`gui.py`**: RVM log por archivo (keywords encontradas/no encontradas). Umbral Servipag ≥ $1.000.000 agrega motivo.
+
+### Compilado
+- `rose.exe` (64 MB) con PyInstaller, incluye `robos` como hidden import.
+
 ### HEAD
-`a89563a` robos: theft check integration with captcha bypass, RUT/NO_VIGENTE false positive fixes
+`7ef3922` fix: FlateDecode image OCR via Image.frombuffer() with Width/Height/ColorSpace
