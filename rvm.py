@@ -11,12 +11,11 @@ import asyncio
 import logging
 import re
 import shutil
-import subprocess
-import socket
 import tempfile
-import time
 from pathlib import Path
 from typing import Optional
+
+from cdp_common import CHROME_PATH, find_free_port, launch_chrome, wait_for_cdp
 
 try:
     from playwright.async_api import async_playwright
@@ -26,24 +25,6 @@ except ImportError:
 log = logging.getLogger("rvm")
 
 VERIFY_URL = "https://www.registrocivil.cl/OficinaInternet/verificacion/verificacioncertificado.srcei"
-
-_CHROME_CANDIDATES = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-]
-CHROME_PATH = None
-for p in _CHROME_CANDIDATES:
-    if Path(p).exists():
-        CHROME_PATH = p
-        break
-if not CHROME_PATH:
-    CHROME_PATH = shutil.which("chrome") or shutil.which("google-chrome")
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
 
 
 # ---------------------------------------------------------------------------
@@ -206,24 +187,13 @@ async def verificar_rvm_async(
         return {**result, "error": "Chrome no encontrado"}
 
     debug_dir = Path(tempfile.mkdtemp(prefix="rvm_"))
-    debug_port = _find_free_port()
+    debug_port = find_free_port()
     proc = None
 
     try:
-        chrome_args = [
-            CHROME_PATH,
-            f"--user-data-dir={debug_dir}",
-            f"--remote-debugging-port={debug_port}",
-            "--no-first-run", "--no-default-browser-check",
-            "--disable-search-engine-choice-screen",
-            "--window-size=1000,700",
-        ]
-
-        proc = subprocess.Popen(
-            chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
+        proc = launch_chrome(debug_port, debug_dir, window_size="1000,700")
         log.info("Chrome PID=%s", proc.pid)
-        time.sleep(6)
+        wait_for_cdp(debug_port)
 
         async with async_playwright() as pw:
             browser = await pw.chromium.connect_over_cdp(

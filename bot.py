@@ -23,14 +23,12 @@ import logging
 import os
 import re
 import sys
-import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
 
 import requests
-from bs4 import BeautifulSoup
 
 try:
     import PyPDF2
@@ -294,18 +292,29 @@ def download_img(session: requests.Session, url: str, dest: Path, idx: int) -> O
     return path
 
 
+def _ocr_pil(img) -> str:
+    """OCR sobre un objeto PIL.Image ya abierto (sin round-trip a disco)."""
+    if pytesseract is None:
+        return ""
+    try:
+        text = pytesseract.image_to_string(img, lang="spa")
+        log.info("  OCR: %s chars", len(text))
+        return text
+    except Exception as e:
+        log.warning("  Error OCR: %s", e)
+        return ""
+
+
 def ocr_image(path: Path) -> str:
     if pytesseract is None:
         log.error("pip install pytesseract")
         return ""
     try:
         img = Image.open(path)
-        text = pytesseract.image_to_string(img, lang="spa")
-        log.info("  OCR: %s chars", len(text))
-        return text
     except Exception as e:
-        log.warning("  Error OCR en %s: %s", path.name, e)
+        log.warning("  Error abriendo %s: %s", path.name, e)
         return ""
+    return _ocr_pil(img)
 
 
 SIMILITUD_RE = re.compile(r"(\d{1,3}(?:[.,]\d+)?)\s*%\s*similitud", re.IGNORECASE)
@@ -401,23 +410,13 @@ def _ocr_pdf_images(reader) -> str:
                     continue
                 # JPEG directo (DCTDecode)
                 if data[:2] == b'\xff\xd8':
-                    fd, img_path_str = tempfile.mkstemp(suffix=".jpg")
-                    img_path = Path(img_path_str)
                     try:
-                        os.close(fd)
-                    except Exception:
-                        pass
-                    try:
-                        img_path.write_bytes(data)
-                        if pytesseract:
-                            ocr_t = ocr_image(img_path)
-                            if ocr_t.strip():
-                                texts.append(ocr_t)
-                    finally:
-                        try:
-                            img_path.unlink()
-                        except Exception:
-                            pass
+                        img = Image.open(BytesIO(data))
+                        ocr_t = _ocr_pil(img)
+                        if ocr_t.strip():
+                            texts.append(ocr_t)
+                    except Exception as e2:
+                        log.warning("  Error OCR JPEG pág %s %s: %s", i, xname, e2)
                 else:
                     # FlateDecode u otro: raw pixel data, construir PIL Image
                     w = xobj.get('/Width')
@@ -442,23 +441,9 @@ def _ocr_pdf_images(reader) -> str:
                         mode = "RGB"  # default
                     try:
                         img = Image.frombuffer(mode, (w, h), data, "raw", mode, 0, 1)
-                        fd, img_path_str = tempfile.mkstemp(suffix=".png")
-                        img_path = Path(img_path_str)
-                        try:
-                            os.close(fd)
-                        except Exception:
-                            pass
-                        try:
-                            img.save(img_path, format="PNG")
-                            if pytesseract:
-                                ocr_t = ocr_image(img_path)
-                                if ocr_t.strip():
-                                    texts.append(ocr_t)
-                        finally:
-                            try:
-                                img_path.unlink()
-                            except Exception:
-                                pass
+                        ocr_t = _ocr_pil(img)
+                        if ocr_t.strip():
+                            texts.append(ocr_t)
                     except Exception as e2:
                         log.warning("  Error construyendo imagen pág %s %s: %s", i, xname, e2)
         except Exception as e:
@@ -714,6 +699,8 @@ def procesar_ticket(
     all_razones_encontradas: list[str] = []
     status_global = {"vigente": None, "rechazado": False, "no_vigente": False, "similitud_pct": None}
     fecha_emision = None
+    # Cache del texto extraído por PDF (evita re-extraer + re-OCR en la fase RVM)
+    textos_pdf: dict[Path, str] = {}
 
     for i, file in enumerate(pdfs, 1):
         p = download_pdf(session, file["url"], out_dir, i)
@@ -722,6 +709,7 @@ def procesar_ticket(
         text = extract_text(p)
         if not text:
             continue
+        textos_pdf[p] = text
         ruts = find_ruts(text)
         if ruts:
             all_ruts_encontrados.extend(ruts)
@@ -820,8 +808,7 @@ def procesar_ticket(
     # RVM verification (Certificado de Inscripción R.V.M. en Registro Civil)
     rvm_resultado = None
     try:
-        for pdf_path in out_dir.glob("*.pdf"):
-            text_rvm = extract_text(pdf_path)
+        for pdf_path, text_rvm in textos_pdf.items():
             if not text_rvm:
                 continue
             if "R.V.M." in text_rvm or "RVM" in text_rvm or "INSCRIPCION" in text_rvm.upper():

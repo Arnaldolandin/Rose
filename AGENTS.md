@@ -118,3 +118,37 @@ python gui.py                  # GUI con input de ticket + foto + log
 
 ### HEAD
 `7ef3922` fix: FlateDecode image OCR via Image.frombuffer() with Width/Height/ColorSpace
+
+## Session: 2026-07-02 — Optimizaciones (sin cambios de comportamiento)
+
+Refactors de rendimiento y mantenibilidad. **No** se tocó la lógica de estado
+(APROBADO/RECHAZADO/PENDIENTE), regex de extracción ni la precedencia de motivos.
+
+### Cambios
+- **`bot.py` — doble extracción eliminada**: `procesar_ticket()` ahora cachea el
+  texto de cada PDF en `textos_pdf: dict[Path, str]` durante el loop principal.
+  La fase RVM reusa ese cache en vez de volver a `extract_text()` (que incluye
+  OCR) sobre todos los PDFs con `out_dir.glob("*.pdf")`. Elimina una segunda
+  ronda completa de OCR por ticket (mayor impacto en batch).
+- **`bot.py` — OCR en memoria**: nuevo `_ocr_pil(img)` corre Tesseract sobre un
+  `PIL.Image` directo. `_ocr_pdf_images()` ya no escribe cada imagen embebida a
+  un `tempfile` para releerla (JPEG vía `Image.open(BytesIO(data))`, FlateDecode
+  vía el `frombuffer` ya construido). `ocr_image(path)` delega en `_ocr_pil`.
+  Se quitó `import tempfile` de bot.py.
+- **`cdp_common.py` (nuevo)**: centraliza el boilerplate idéntico de los 5
+  módulos CDP — `CHROME_PATH`, `find_free_port()`, `launch_chrome()` y
+  `wait_for_cdp()`. Sigue lanzando Chrome real por subprocess (anti-Cloudflare);
+  NO se migró a `playwright.chromium.launch()`.
+- **`servipag/sii/rvm/robos/sap.py`**: usan `cdp_common`. El `time.sleep(6..8)`
+  fijo tras lanzar Chrome se reemplazó por `wait_for_cdp()` que sondea el
+  endpoint DevTools `/json/version` y conecta apenas está listo (~1-2s vs 6-8s).
+  En un ticket APROBADO que dispara SII+RVM+robo+Servipag en serie son ~20-26s
+  menos de espera fija.
+- **`beautifulsoup4` eliminado**: `from bs4 import BeautifulSoup` en bot.py era
+  import muerto (el RSC se parsea con regex). Removido de `requirements.txt` y de
+  `Rose.spec` (hiddenimports). Spec ahora también lista `cdp_common`, `sii`, `rvm`.
+
+### Verificación
+- AST + import de los 8 módulos OK. Sin referencias colgantes a
+  `subprocess`/`socket`/`_find_free_port`/`time.sleep`/`tempfile` en el código de
+  lanzamiento de Chrome. Pendiente: prueba manual contra un ticket real.

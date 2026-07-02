@@ -5,12 +5,11 @@ Módulo SAP: login + llenado de formulario en SAP CRM WebClient UI.
 import asyncio
 import logging
 import shutil
-import subprocess
-import socket
 import tempfile
-import time
 from pathlib import Path
 from typing import Optional
+
+from cdp_common import CHROME_PATH, find_free_port, launch_chrome, wait_for_cdp
 
 try:
     from playwright.async_api import async_playwright
@@ -23,23 +22,6 @@ SAP_URL = (
     "https://chppas01.autopase.cl:1443/sap(bD1lcyZjPTQwMCZkPW1pbg==)/"
     "bc/bsp/sap/crm_ui_start/default.htm?sap-client=400&sap-language=ES"
 )
-
-_CHROME_CANDIDATES = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    r"chrome.exe",
-]
-CHROME_PATH = None
-for p in _CHROME_CANDIDATES:
-    if Path(p).exists() or p == "chrome.exe":
-        CHROME_PATH = p
-        break
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
 
 
 async def _llenar_input_js(page, selector: str, valor: str) -> bool:
@@ -74,26 +56,16 @@ async def sap_llenar_async(
         return {**result, "error": "Chrome no encontrado"}
 
     debug_dir = Path(tempfile.mkdtemp(prefix="sap_"))
-    debug_port = _find_free_port()
+    debug_port = find_free_port()
     proc = None
 
     try:
-        chrome_args = [
-            CHROME_PATH,
-            f"--user-data-dir={debug_dir}",
-            f"--remote-debugging-port={debug_port}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-search-engine-choice-screen",
-            "--window-size=1400,900",
-            "--ignore-certificate-errors",
-        ]
-
-        proc = subprocess.Popen(
-            chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        proc = launch_chrome(
+            debug_port, debug_dir,
+            window_size="1400,900", extra_args=["--ignore-certificate-errors"],
         )
         log.info("Chrome PID=%s", proc.pid)
-        time.sleep(6)
+        wait_for_cdp(debug_port)
 
         async with async_playwright() as pw:
             browser = await pw.chromium.connect_over_cdp(
