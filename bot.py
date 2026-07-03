@@ -296,6 +296,13 @@ def _ocr_pil(img) -> str:
     """OCR sobre un objeto PIL.Image ya abierto (sin round-trip a disco)."""
     if pytesseract is None:
         return ""
+    # Convertir a RGB: normaliza formatos que Tesseract rechaza (MPO multi-imagen
+    # de cámaras de celular, CMYK, paleta) — evita "Unsupported image format/type".
+    try:
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+    except Exception:
+        pass
     try:
         text = pytesseract.image_to_string(img, lang="spa")
         log.info("  OCR: %s chars", len(text))
@@ -568,7 +575,9 @@ def normalizar_patente(raw: str) -> str:
     m = re.match(r"^([A-Z]{4})-?(\d{2})(-[\dK])?$", s)
     if m:
         return m.group(1) + m.group(2) + (m.group(3) or "")
-    m = re.match(r"^([A-Z]{2})-?(\d{3,4})$", s)
+    # antigua 2L+3-4N, con posible dígito verificador -N (ej. "ZB5004-3" -> "ZB5004").
+    # En 2L4N no hay ambigüedad con patente interna, así que el -N siempre se descarta.
+    m = re.match(r"^([A-Z]{2})-?(\d{3,4})(?:-[\dkK])?$", s)
     if m:
         return m.group(1) + m.group(2)
     return s.replace("-", "")

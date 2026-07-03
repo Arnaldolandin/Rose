@@ -316,3 +316,17 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   - vendedor: `como Vendedor/Vendedora`, **parte vendedora**, `vende y transfiere`.
 - Sin regresión: cv.pdf y cv3.pdf extraen idéntico (ZB5004/LKPK16, adquirente y
   propietario correctos, CVE ok).
+
+### 2026-07-03 — Bugfixes de corrida real (tickets 499406/408/409)
+
+- **`normalizar_patente` — dígito verificador en 2L4N**: patente de ticket
+  "ZB5004-3" (2 letras + 4 dígitos + DV) quedaba en "ZB50043" (7 chars) y se
+  mandaba así al chequeo de robo. La rama 4L2N descartaba el `-N` pero la 2L4N no.
+  Fix: `^([A-Z]{2})-?(\d{3,4})(?:-[\dkK])?$` descarta el DV (en 2L4N no hay
+  ambigüedad con patente interna). "PYKS20-4" (interno 4L2N) se sigue conservando.
+- **OCR de imágenes MPO**: fotos de celular en formato MPO (multi-imagen) tiraban
+  "Unsupported image format/type" y se saltaba la imagen. Fix: `_ocr_pil` convierte
+  a RGB antes del OCR (también cubre CMYK/paleta).
+- La corrida confirmó en producción: compraventa (transferencia_rc) detectada +
+  cotejo de adquirente, SII, robo y Servipag en paralelo, status correcto
+  (RECHAZADO por similitud 0%/NO VIGENTE vs APROBADO con similitud 97%).
