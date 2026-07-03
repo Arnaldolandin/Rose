@@ -183,18 +183,21 @@ def fetch_desk_rsc(session: requests.Session, desk_id: int) -> str:
 def parse_ticket(rsc_text: str) -> Optional[dict]:
     """Busca el JSON 'ticket:{...}' en el RSC y parsea reemplazando \u0026."""
     # El RSC tiene el formato: "ticket":{...}}  (con comillas escapadas)
-    m = re.search(r'"ticket"\s*:\s*(\{.+\})\s*\}', rsc_text, re.DOTALL)
+    # Se captura desde el primer '{' hasta el final; raw_decode (abajo) parsea sólo
+    # el objeto del ticket e ignora lo que siga. Antes el regex era greedy hasta el
+    # último '}' del RSC y json.loads fallaba con "Extra data".
+    m = re.search(r'"ticket"\s*:\s*(\{.+)', rsc_text, re.DOTALL)
     if not m:
         log.warning("No se encontro ticket en RSC")
         return None
-    raw = m.group(1) + "}"
+    raw = m.group(1)
     # Reemplazar \u0026 por & y otros escapes
     raw = raw.replace('\\"', '"').replace('\\n', ' ')
     raw = raw.replace('\\u0026', '&').replace('\\u002F', '/')
     raw = re.sub(r'\\x[0-9a-fA-F]{2}', ' ', raw)
-    # Reconstruir JSON valido
+    # Parsear sólo el objeto del ticket (ignora el resto del RSC que sigue)
     try:
-        return json.loads(raw)
+        return json.JSONDecoder().raw_decode(raw)[0]
     except json.JSONDecodeError as e:
         log.warning("Error parseando ticket JSON: %s", e)
         # Fallback por regex

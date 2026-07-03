@@ -330,3 +330,10 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
 - La corrida confirmó en producción: compraventa (transferencia_rc) detectada +
   cotejo de adquirente, SII, robo y Servipag en paralelo, status correcto
   (RECHAZADO por similitud 0%/NO VIGENTE vs APROBADO con similitud 97%).
+- **`parse_ticket` — "Error parseando ticket JSON: Extra data"**: el regex era
+  greedy (`(\{.+\})\s*\}`) y capturaba desde el `{` del ticket hasta el ÚLTIMO `}`
+  del RSC, así que `json.loads` parseaba el ticket y fallaba con "Extra data" por
+  todo el resto → caía al fallback por regex en cada ticket. Fix: capturar `(\{.+)`
+  y usar `json.JSONDecoder().raw_decode(raw)[0]`, que parsea sólo el objeto del
+  ticket e ignora lo que sigue. Ahora devuelve el dict completo sin warning ni
+  fallback.
