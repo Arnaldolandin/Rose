@@ -24,6 +24,7 @@ from bot import (
     find_patentes,
     normalizar_patente,
     find_razon_social,
+    es_transferencia_compraventa,
     extraer_datos_transferencia,
     find_telefono,
     find_direccion,
@@ -40,6 +41,7 @@ from sii import consultar_sii
 from rvm import extraer_datos_rvm, verificar_rvm, extraer_y_verificar
 from sap import sap_llenar
 from robos import consultar_robo
+from notarial import verificar_cve
 
 OUT_DIR = Path("./pdfs")
 MAX_IMG_W, MAX_IMG_H = 500, 500
@@ -1239,25 +1241,42 @@ class App(tk.Tk):
                 log.warning("Error verificando RVM: %s", e)
             reporte.append(rvm_report)
 
-            # Solicitud de Transferencia / compraventa (alternativa al RVM/padrón).
-            # Informativo: no altera el status. Solo surface los datos y marca que
-            # requiere revisión manual (no hay folio verificable online como el RVM).
+            # Compraventa de vehículo (alternativa al RVM/padrón): formulario RC
+            # o certificación notarial. En el cert notarial el contrato (RUT/patente)
+            # está en páginas escaneadas → se re-extrae con OCR; y el CVE se verifica
+            # online (HTTP, sin Chrome). En una transferencia el solicitante del TAG
+            # debe ser el adquirente (nuevo dueño): si no coincide, se marca motivo.
             if rvm_report == "RVM: —":
-                for arch, text_doc in textos_por_archivo.items():
-                    datos_tr = extraer_datos_transferencia(text_doc)
+                for arch, text_cover in textos_por_archivo.items():
+                    if not es_transferencia_compraventa(text_cover):
+                        continue
+                    full = (extract_text(arch, force_ocr_images=True)
+                            if arch.suffix.lower() == ".pdf" else text_cover)
+                    datos_tr = extraer_datos_transferencia(full)
                     if not datos_tr["encontrado"]:
                         continue
-                    partes = ["Transferencia (compraventa)"]
+                    tipo = datos_tr["tipo"]
+                    log.info("Compraventa (%s) en %s: %s", tipo, arch.name, datos_tr)
+                    partes = ["Notarial" if tipo == "notarial" else "Transferencia RC"]
                     if datos_tr["patente"]:
                         partes.append(f"PPU {datos_tr['patente']}")
                     if datos_tr["rut_adquirente"]:
                         partes.append(f"adq {datos_tr['rut_adquirente']}")
                     if datos_tr["fecha"]:
                         partes.append(datos_tr["fecha"])
-                    reporte.append(" | ".join(partes) + " — revisar manual")
-                    log.info("Transferencia/compraventa detectada en %s: %s", arch.name, datos_tr)
-                    # En una transferencia el solicitante del TAG debe ser el
-                    # adquirente (nuevo dueño); si no coincide, se marca motivo.
+                    # Verificación CVE online (solo cert notarial)
+                    if datos_tr["cve"]:
+                        cve_res = verificar_cve(datos_tr["cve"])
+                        if cve_res.get("success") and cve_res.get("valido") is True:
+                            partes.append(f"CVE ✓ ({cve_res.get('notaria') or ''})")
+                        elif cve_res.get("success") and cve_res.get("valido") is False:
+                            partes.append("CVE ✗ NO válido")
+                            motivos.append("CVE notarial no válido")
+                        else:
+                            partes.append("CVE ? (no verificable)")
+                    else:
+                        partes.append("revisar manual")
+                    reporte.append("Compraventa: " + " | ".join(partes))
                     adq = datos_tr.get("rut_adquirente")
                     if adq and rut_ticket:
                         adq_norm = adq.replace(".", "").replace("-", "").upper()

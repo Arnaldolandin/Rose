@@ -253,3 +253,35 @@ verificable online como el RVM.
   manual"). NO fuerza PENDIENTE por sí sola (decisión #1 quedó descartada); solo
   el cotejo de adquirente afecta el status.
 - Detección afinada sobre **un** documento; con más muestras puede requerir ajuste.
+
+### 2026-07-03 — Compraventa: 2do formato (cert notarial) + verificación CVE + OCR mixto
+
+Segunda muestra reveló un **segundo formato** de compraventa distinto al formulario
+RC: la **certificación notarial electrónica** de "COMPRAVENTA DE VEHÍCULOS". Ahora
+se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
+
+- **`extract_text(path, force_ocr_images=False)`** (`bot.py`): nuevo flag. El cert
+  notarial es mixto — portada con capa de texto (CVE/notaría/partes) + contrato
+  escaneado en páginas siguientes (RUT/patente). Antes el fallback OCR solo corría
+  si NO había texto, así que el contrato nunca se OCR-eaba. Con `force_ocr_images`
+  se anexa el OCR de las imágenes aunque haya texto. Opt-in (es lento): el llamador
+  lo activa solo cuando detecta una compraventa candidata.
+- **`bot.py`**: `es_transferencia_compraventa()` ampliado (detecta cert notarial por
+  NOTARI/REPERTORIO/CVE/FIRMA ELECTR/VENDEDOR/COMPRADOR). `extraer_datos_transferencia()`
+  ahora devuelve `tipo`, `cve`, `notaria`, `materia`, `repertorio`. Helpers:
+  `_rut_antes()` (RUT antes de "como Comprador/Vendedor" en el contrato en prosa),
+  `_patente_ppu()` (PPU 2L+4N o 4L+2N, descarta el dígito verificador -N).
+  Comprador = adquirente, vendedor = propietario.
+- **`notarial.py`** (nuevo): verifica el CVE. **HTTP puro, sin Chrome ni captcha**
+  (a diferencia de los otros módulos): el portal ajs.cl para docs notariales
+  (radio "NOTA") consulta `GET https://repositorio.registrosnotariales.cl:8181/rest/api/verificar/{cve}`
+  → JSON `{error, url, datosDocumento:{notaria,materia,repertorio,fechaRepertorio}}`.
+  SSL estricto OK. Con reintento. `verificar_cve(cve)`.
+- **Integración gui/bot**: al detectar compraventa candidata, se re-extrae con
+  `force_ocr_images=True`, y si hay CVE se verifica online. Reporte GUI:
+  "Compraventa: Notarial | PPU LKPK16 | adq 19.902.071-4 | CVE ✓ (notaría)" o
+  "Transferencia RC | ... | revisar manual". Motivos: "CVE notarial no válido"
+  (si el CVE es falso) y "RUT del ticket no es el adquirente" (cotejo). `Rose.spec`
+  +`notarial`.
+- Probado contra los DOS documentos reales (RC y notarial), incl. verificación CVE
+  online válida. Docs mixtos con >1 notaría/formato podrían requerir ajuste.

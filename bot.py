@@ -371,7 +371,15 @@ def check_vigente_optimo(text: str) -> dict:
     return result
 
 
-def extract_text(path: Path) -> str:
+def extract_text(path: Path, force_ocr_images: bool = False) -> str:
+    """Extrae texto de un PDF.
+
+    `force_ocr_images=True` además OCR-ea las imágenes embebidas aunque ya haya
+    capa de texto, y las anexa. Necesario para documentos mixtos (portada con
+    texto + páginas escaneadas), ej. la certificación notarial de compraventa:
+    la portada tiene texto pero el contrato con RUT/patente está escaneado.
+    Es más lento, así que solo se activa cuando el llamador lo pide.
+    """
     if PyPDF2 is None:
         log.error("pip install PyPDF2")
         return ""
@@ -384,6 +392,11 @@ def extract_text(path: Path) -> str:
         if not text.strip():
             log.info("  PDF sin texto, extrayendo imágenes para OCR...")
             text = _ocr_pdf_images(reader)
+        elif force_ocr_images:
+            log.info("  force_ocr_images: OCR de imágenes embebidas además del texto...")
+            ocr_extra = _ocr_pdf_images(reader)
+            if ocr_extra.strip():
+                text = text + "\n" + ocr_extra
         return text
     except Exception as e:
         log.warning("  Error en %s: %s", path.name, e)
@@ -639,72 +652,140 @@ def find_razon_social(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Solicitud de Transferencia / compraventa (alternativa al RVM/padrón)
+# Compraventa de vehículo (alternativa al RVM/padrón) — dos formatos
 # ---------------------------------------------------------------------------
-# El solicitante a veces sube, en lugar del certificado RVM o el padrón, la
-# "Solicitud de Transferencia" del Registro Civil basada en un contrato privado
-# de compraventa ante notario. Es un PDF escaneado (va por OCR), con las secciones
-# ACTUAL PROPIETARIO (vendedor) / ADQUIRENTE (nuevo dueño) / SOLICITANTE, el
-# código PPU (patente) y los datos del documento (naturaleza COMPRAVENTA, fecha,
-# notario). No hay folio+código verificable online como el RVM.
+# En lugar del RVM/padrón, el solicitante a veces sube una compraventa. Hay dos
+# formatos distintos:
+#
+#   tipo "transferencia_rc": "Solicitud de Transferencia" del Registro Civil.
+#     PDF escaneado (OCR), secciones ACTUAL PROPIETARIO / ADQUIRENTE / SOLICITANTE
+#     con RUT etiquetados, código PPU (patente). Sin verificación online.
+#
+#   tipo "notarial": certificación notarial electrónica de "COMPRAVENTA DE
+#     VEHÍCULOS". Portada con capa de texto (CVE + notaría + partes) y el contrato
+#     escaneado en páginas siguientes (Vendedor/Comprador con RUT + P.P.U). El CVE
+#     se verifica online en el repositorio notarial (ver notarial.py). Para sacar
+#     RUT/patente del contrato hace falta extract_text(..., force_ocr_images=True).
 
 _RUT_TRAS_RE_CACHE: dict = {}
 
 
 def _primer_rut_tras(text: str, ancla: str, ventana: int = 250) -> Optional[str]:
-    """Primer RUT que aparece dentro de `ventana` chars tras `ancla`.
-
-    El OCR de estos formularios pone los rótulos en bloque y los valores en otro
-    bloque debajo, así que el RUT del adquirente/propietario es el primer RUT que
-    sigue al encabezado de su sección.
-    """
-    rex = _RUT_TRAS_RE_CACHE.get((ancla, ventana))
+    """Primer RUT dentro de `ventana` chars TRAS `ancla` (formularios etiquetados:
+    el OCR pone los rótulos en un bloque y los valores debajo)."""
+    rex = _RUT_TRAS_RE_CACHE.get(("tras", ancla, ventana))
     if rex is None:
         rex = re.compile(
             ancla + r"[\s\S]{0,%d}?(\d{1,2}(?:\.?\d{3}){2}[-.]?[\dkK])" % ventana,
             re.I,
         )
-        _RUT_TRAS_RE_CACHE[(ancla, ventana)] = rex
+        _RUT_TRAS_RE_CACHE[("tras", ancla, ventana)] = rex
     m = rex.search(text)
     return _normalize(m.group(1)) if m else None
 
 
+def _rut_antes(text: str, ancla: str, ventana: int = 160) -> Optional[str]:
+    """RUT que aparece dentro de `ventana` chars ANTES de `ancla` (contrato
+    notarial en prosa: "... CI 19.902.071-4 ... como Comprador")."""
+    rex = _RUT_TRAS_RE_CACHE.get(("antes", ancla, ventana))
+    if rex is None:
+        rex = re.compile(
+            r"(\d{1,2}(?:\.?\d{3}){2}[-.]?[\dkK])[\s\S]{0,%d}?" % ventana + ancla,
+            re.I,
+        )
+        _RUT_TRAS_RE_CACHE[("antes", ancla, ventana)] = rex
+    m = rex.search(text)
+    return _normalize(m.group(1)) if m else None
+
+
+def _patente_ppu(text: str) -> Optional[str]:
+    """Patente desde la etiqueta PPU / P.P.U. Soporta 2L+4N (antigua) y 4L+2N
+    (nueva) y descarta el dígito verificador -N que traen estos documentos."""
+    m = re.search(
+        r"P\.?\s*P\.?\s*U[.:\s]*([A-Z]{2,4}[.\-\s]?\d{2,4}(?:[-.\s]?[\dkK])?)",
+        text, re.I,
+    )
+    if not m:
+        return None
+    pat = normalizar_patente(m.group(1))
+    m2 = re.match(r"^([A-Z]{4}\d{2}|[A-Z]{2}\d{4})-[\dK]$", pat)
+    return m2.group(1) if m2 else pat
+
+
 def es_transferencia_compraventa(text: str) -> bool:
-    """Detecta una Solicitud de Transferencia / compraventa del Registro Civil."""
+    """Detecta una compraventa de vehículo (formulario RC o cert notarial)."""
     T = text.upper()
-    tiene = "SOLICITUD DE TRANSFERENCIA" in T or ("ADQUIRENTE" in T and "PROPIETARIO" in T)
-    ctx = "COMPRAVENTA" in T or "REGISTRO CIVIL" in T
-    return tiene and ctx
+    if "COMPRAVENTA" not in T and "COMPRA VENTA" not in T:
+        return False
+    if "SOLICITUD DE TRANSFERENCIA" in T or ("ADQUIRENTE" in T and "PROPIETARIO" in T):
+        return True
+    return any(k in T for k in ("NOTARI", "REPERTORIO", "CVE", "FIRMA ELECTR",
+                                "VENDEDOR", "COMPRADOR"))
 
 
 def extraer_datos_transferencia(text: str) -> dict:
-    """Extrae los datos clave de una Solicitud de Transferencia / compraventa."""
+    """Extrae los datos clave de una compraventa de vehículo (ambos formatos).
+
+    Devuelve `tipo` = "transferencia_rc" | "notarial" y los campos disponibles.
+    Para el tipo notarial, pasar el texto con OCR de las páginas escaneadas
+    (extract_text(..., force_ocr_images=True)) para obtener RUT/patente.
+    """
     res = {
         "encontrado": False,
+        "tipo": None,
         "patente": None,
         "rut_adquirente": None,
         "rut_propietario": None,
         "rut_solicitante": None,
-        "fecha": None,
+        "cve": None,
         "notaria": None,
+        "materia": None,
+        "repertorio": None,
+        "fecha": None,
     }
     if not es_transferencia_compraventa(text):
         return res
     res["encontrado"] = True
+    T = text.upper()
 
-    mp = re.search(r"PPU[\s:]*([A-Z]{2}[.\-\s]?\d{3,4}[-.\s]?\d?)", text, re.I)
-    if mp:
-        res["patente"] = normalizar_patente(mp.group(1))
+    # CVE notarial (ej. 076-2026062612154388)
+    mcve = re.search(r"\bCVE[:\s]*([0-9]{3}-[0-9]{10,})", text)
+    if mcve:
+        res["cve"] = mcve.group(1)
 
-    res["rut_propietario"] = _primer_rut_tras(text, "PROPIETARIO")
-    res["rut_adquirente"] = _primer_rut_tras(text, "ADQUIRENTE")
-    res["rut_solicitante"] = _primer_rut_tras(text, "SOLICITANTE")
+    res["patente"] = _patente_ppu(text)
 
-    mf = re.search(r"COMPRAVENTA[\s\S]{0,80}?(\d{2}[-/]\d{2}[-/]\d{4})", text, re.I)
+    if "ADQUIRENTE" in T and "PROPIETARIO" in T:
+        res["tipo"] = "transferencia_rc"
+        res["rut_propietario"] = _primer_rut_tras(text, "PROPIETARIO")
+        res["rut_adquirente"] = _primer_rut_tras(text, "ADQUIRENTE")
+        res["rut_solicitante"] = _primer_rut_tras(text, "SOLICITANTE")
+    else:
+        res["tipo"] = "notarial"
+        # Adquirente = comprador; propietario = vendedor (contrato en prosa).
+        res["rut_adquirente"] = (_rut_antes(text, r"como\s+Comprador")
+                                 or _rut_antes(text, r"compra\s+y\s+adquiere"))
+        res["rut_propietario"] = _rut_antes(text, r"como\s+Vendedor")
+
+    # Fecha: RC → tras COMPRAVENTA; notarial → "de fecha DD-MM-AAAA"
+    mf = re.search(r"COMPRAVENTA[\s\S]{0,80}?(\d{2}[-/]\s*\d{2}[-/]\d{4})", text, re.I)
+    if not mf:
+        mf = re.search(r"de\s+fecha\s*(\d{2}-\s*\d{2}-\d{4})", text, re.I)
     if mf:
-        res["fecha"] = mf.group(1)
+        res["fecha"] = re.sub(r"\s+", "", mf.group(1))
 
-    mn = re.search(r"\bNOT\.?\s+([A-ZÁÉÍÓÚÑ]{3,}(?:[ ]+[A-ZÁÉÍÓÚÑ]{3,}){0,2})", text)
+    mm = re.search(r"(COMPRAVENTA(?:\s+DE\s+VEH\S+)?)", text, re.I)
+    if mm:
+        res["materia"] = re.sub(r"\s+", " ", mm.group(1)).upper().rstrip(" ,.;")
+
+    mr = re.search(r"repertorio\s+n\S*\s*(\d+)", text, re.I)
+    if mr:
+        res["repertorio"] = mr.group(1)
+
+    # Notaría: por etiqueta "Notaría X" o por prefijo "NOT " (formulario RC)
+    mn = re.search(r"Notar[ií]a[ ]+([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+(?:[ ]+[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ]+){0,3})", text)
+    if not mn:
+        mn = re.search(r"\bNOT\.?[ ]+([A-ZÁÉÍÓÚÑ]{3,}(?:[ ]+[A-ZÁÉÍÓÚÑ]{3,}){0,2})", text)
     if mn:
         res["notaria"] = mn.group(1).strip()
 
@@ -872,22 +953,36 @@ def procesar_ticket(
     if len(razones_set) > 1:
         motivos.append("Razón social inconsistente")
 
-    # Solicitud de Transferencia / compraventa (alternativa al RVM/padrón).
-    # En una transferencia, el solicitante del TAG debe ser el adquirente (nuevo
-    # dueño); si el RUT del ticket no es el adquirente, se marca motivo.
+    # Compraventa de vehículo (alternativa al RVM/padrón): formulario RC o cert
+    # notarial. Para el cert notarial el contrato (RUT/patente) está escaneado →
+    # re-extraer con OCR; y el CVE se verifica online. En una transferencia el
+    # solicitante del TAG debe ser el adquirente; si no coincide, se marca motivo.
     transferencia = None
-    for text_doc in textos_pdf.values():
-        datos_tr = extraer_datos_transferencia(text_doc)
-        if datos_tr["encontrado"]:
-            transferencia = datos_tr
-            log.info("Transferencia/compraventa detectada: %s", datos_tr)
-            adq = datos_tr.get("rut_adquirente")
-            if adq and rut_ticket:
-                adq_norm = adq.replace(".", "").replace("-", "").upper()
-                if rut_ticket.replace(".", "").replace("-", "").upper() != adq_norm:
-                    motivos.append("RUT del ticket no es el adquirente")
-                    log.info("Adquirente %s != ticket %s", adq_norm, rut_ticket)
-            break
+    for pdf_path, text_doc in textos_pdf.items():
+        if not es_transferencia_compraventa(text_doc):
+            continue
+        full = extract_text(pdf_path, force_ocr_images=True)
+        datos_tr = extraer_datos_transferencia(full)
+        if not datos_tr["encontrado"]:
+            continue
+        transferencia = datos_tr
+        log.info("Compraventa (%s) detectada: %s", datos_tr["tipo"], datos_tr)
+        if datos_tr.get("cve"):
+            try:
+                from notarial import verificar_cve
+                cve_res = verificar_cve(datos_tr["cve"])
+                transferencia["cve_verificacion"] = cve_res
+                if cve_res.get("success") and cve_res.get("valido") is False:
+                    motivos.append("CVE notarial no válido")
+            except Exception as e:
+                log.warning("Error verificando CVE: %s", e)
+        adq = datos_tr.get("rut_adquirente")
+        if adq and rut_ticket:
+            adq_norm = adq.replace(".", "").replace("-", "").upper()
+            if rut_ticket.replace(".", "").replace("-", "").upper() != adq_norm:
+                motivos.append("RUT del ticket no es el adquirente")
+                log.info("Adquirente %s != ticket %s", adq_norm, rut_ticket)
+        break
     result["transferencia"] = transferencia
 
     if status_global["rechazado"]:
