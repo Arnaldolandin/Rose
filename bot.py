@@ -699,10 +699,11 @@ def _rut_antes(text: str, ancla: str, ventana: int = 160) -> Optional[str]:
 
 
 def _patente_ppu(text: str) -> Optional[str]:
-    """Patente desde la etiqueta PPU / P.P.U. Soporta 2L+4N (antigua) y 4L+2N
-    (nueva) y descarta el dígito verificador -N que traen estos documentos."""
+    """Patente desde la etiqueta PPU / P.P.U / Placa / Patente. Soporta 2L+4N
+    (antigua) y 4L+2N (nueva) y descarta el dígito verificador -N."""
     m = re.search(
-        r"P\.?\s*P\.?\s*U[.:\s]*([A-Z]{2,4}[.\-\s]?\d{2,4}(?:[-.\s]?[\dkK])?)",
+        r"(?:P\.?\s*P\.?\s*U|Placa(?:\s+[ÚU]nica|\s+Patente)?|Patente)"
+        r"[.:\s]*([A-Z]{2,4}[.\-\s]?\d{2,4}(?:[-.\s]?[\dkK])?)",
         text, re.I,
     )
     if not m:
@@ -763,9 +764,16 @@ def extraer_datos_transferencia(text: str) -> dict:
     else:
         res["tipo"] = "notarial"
         # Adquirente = comprador; propietario = vendedor (contrato en prosa).
-        res["rut_adquirente"] = (_rut_antes(text, r"como\s+Comprador")
-                                 or _rut_antes(text, r"compra\s+y\s+adquiere"))
-        res["rut_propietario"] = _rut_antes(text, r"como\s+Vendedor")
+        # Anclajes con sinónimos para tolerar la redacción de distintas notarías.
+        res["rut_adquirente"] = (
+            _rut_antes(text, r"(?:como\s+)?(?:Comprador|Compradora|parte\s+compradora)")
+            or _rut_antes(text, r"compra\s+y\s+adquiere")
+            or _rut_antes(text, r"adquiere\s+para")
+        )
+        res["rut_propietario"] = (
+            _rut_antes(text, r"(?:como\s+)?(?:Vendedor|Vendedora|parte\s+vendedora)")
+            or _rut_antes(text, r"vende\s+y\s+transfiere")
+        )
 
     # Fecha: RC → tras COMPRAVENTA; notarial → "de fecha DD-MM-AAAA"
     mf = re.search(r"COMPRAVENTA[\s\S]{0,80}?(\d{2}[-/]\s*\d{2}[-/]\d{4})", text, re.I)

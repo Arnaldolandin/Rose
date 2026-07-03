@@ -300,3 +300,19 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   patente) siguen en el pipeline como guardarraíl; el LLM solo extrae.
 - Requisitos para correrlo: `pip install anthropic pydantic` + `ANTHROPIC_API_KEY`.
   No verificado en vivo aún (el entorno de dev no tenía SDK ni credenciales).
+
+### 2026-07-03 — Descartado el LLM; se blindaron los regex
+
+- Se **eliminaron** los prototipos LLM (`extractor_llm.py` API de pago, y un
+  `extractor_local.py` con Ollama que no llegó a commitearse). Decisión: para el
+  volumen actual no justifica el costo/instalación; los regex ya funcionan y son
+  gratis/sin setup. Ante un layout nuevo que falle, se ajustan los anclajes a mano
+  (flujo ya probado con cv.pdf y cv3.pdf).
+- **`bot.py` — anclajes con sinónimos** en `extraer_datos_transferencia`, para
+  tolerar la redacción de distintas notarías sin tocar código:
+  - `_patente_ppu`: PPU / P.P.U / **Placa** / **Placa Única** / **Patente**.
+  - comprador: `como Comprador/Compradora`, **parte compradora**, `compra y
+    adquiere`, **adquiere para**.
+  - vendedor: `como Vendedor/Vendedora`, **parte vendedora**, `vende y transfiere`.
+- Sin regresión: cv.pdf y cv3.pdf extraen idéntico (ZB5004/LKPK16, adquirente y
+  propietario correctos, CVE ok).
