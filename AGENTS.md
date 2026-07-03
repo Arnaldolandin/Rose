@@ -285,3 +285,18 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   +`notarial`.
 - Probado contra los DOS documentos reales (RC y notarial), incl. verificación CVE
   online válida. Docs mixtos con >1 notaría/formato podrían requerir ajuste.
+
+### 2026-07-03 — Prototipo de extracción con LLM (aparte, no enganchado)
+
+- **`extractor_llm.py`** (nuevo, standalone): extrae los datos de compraventa con
+  Claude en vez de regex, para evaluar si generaliza mejor a layouts de notaría no
+  vistos. Toma el PDF directo (Claude hace OCR + extracción en un paso, sin
+  Tesseract) o texto ya extraído; devuelve JSON estructurado validado con Pydantic
+  vía `client.messages.parse()`. Modelo default `claude-opus-4-8` (Sonnet 5 como
+  opción producción más barata). `anthropic` es import opcional (degrada con
+  mensaje claro si falta). El `__main__` imprime LLM vs `extraer_datos_transferencia`
+  (regex) lado a lado sobre el mismo PDF.
+- **No toca el pipeline.** La verificación (CVE/SII/RVM) y validación (mód-11,
+  patente) siguen en el pipeline como guardarraíl; el LLM solo extrae.
+- Requisitos para correrlo: `pip install anthropic pydantic` + `ANTHROPIC_API_KEY`.
+  No verificado en vivo aún (el entorno de dev no tenía SDK ni credenciales).
