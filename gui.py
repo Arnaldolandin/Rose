@@ -24,6 +24,7 @@ from bot import (
     find_patentes,
     normalizar_patente,
     find_razon_social,
+    extraer_datos_transferencia,
     find_telefono,
     find_direccion,
     validar_rut,
@@ -1030,6 +1031,8 @@ class App(tk.Tk):
             all_ruts_encontrados: list[str] = []
             all_razones_encontradas: list[str] = []
             fecha_emision = None
+            # Cache del texto extraído por archivo (evita re-extraer + re-OCR en la fase RVM)
+            textos_por_archivo: dict = {}
             if pdfs:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 log.info("Descargando %s PDF(s)...", len(pdfs))
@@ -1040,13 +1043,14 @@ class App(tk.Tk):
                     text = extract_text(p)
                     if not text:
                         continue
+                    textos_por_archivo[p] = text
                     ruts = find_ruts(text)
                     if ruts:
                         log.info("PDF#%d RUTs: %s", i, ruts)
                         all_ruts_encontrados.extend(ruts)
                     # Preferir datos del ticket sobre PDF (el ticket es fuente oficial)
                     if not rut_ticket:
-                        ruts_display = find_ruts(text)
+                        ruts_display = ruts
                         if ruts_display:
                             self.after(0, self.result_vars["rut"].set, ruts_display[0])
                             self.after(0, self._actualizar_rut_val, ruts_display[0])
@@ -1100,6 +1104,7 @@ class App(tk.Tk):
                 text = ocr_image(p)
                 if not text:
                     continue
+                textos_por_archivo[p] = text
                 ruts_img = find_ruts(text)
                 if ruts_img:
                     log.info("OCR RUTs en imagen %d (%s): %s", i, file["url"].split("/")[-1][:40], ruts_img)
@@ -1206,17 +1211,10 @@ class App(tk.Tk):
                     log.warning("Error consultando SII: %s", e)
             reporte.append(sii_report)
 
-            # RVM verification (PDFs + imágenes)
+            # RVM verification (PDFs + imágenes) — reusa el texto ya extraído/OCR
             rvm_report = "RVM: —"
             try:
-                archivos_rvm = []
-                for ext in ("*.pdf", "*.jpg", "*.jpeg", "*.png"):
-                    archivos_rvm.extend(OUT_DIR.glob(ext))
-                for arch in archivos_rvm:
-                    if arch.suffix.lower() == ".pdf":
-                        text_rvm = extract_text(arch)
-                    else:
-                        text_rvm = ocr_image(arch)
+                for arch, text_rvm in textos_por_archivo.items():
                     if not text_rvm:
                         continue
                     tiene_rvm_kw = "R.V.M." in text_rvm or "RVM" in text_rvm or "INSCRIPCION" in text_rvm.upper()
@@ -1240,6 +1238,33 @@ class App(tk.Tk):
                 rvm_report = f"RVM: Error ({e})"
                 log.warning("Error verificando RVM: %s", e)
             reporte.append(rvm_report)
+
+            # Solicitud de Transferencia / compraventa (alternativa al RVM/padrón).
+            # Informativo: no altera el status. Solo surface los datos y marca que
+            # requiere revisión manual (no hay folio verificable online como el RVM).
+            if rvm_report == "RVM: —":
+                for arch, text_doc in textos_por_archivo.items():
+                    datos_tr = extraer_datos_transferencia(text_doc)
+                    if not datos_tr["encontrado"]:
+                        continue
+                    partes = ["Transferencia (compraventa)"]
+                    if datos_tr["patente"]:
+                        partes.append(f"PPU {datos_tr['patente']}")
+                    if datos_tr["rut_adquirente"]:
+                        partes.append(f"adq {datos_tr['rut_adquirente']}")
+                    if datos_tr["fecha"]:
+                        partes.append(datos_tr["fecha"])
+                    reporte.append(" | ".join(partes) + " — revisar manual")
+                    log.info("Transferencia/compraventa detectada en %s: %s", arch.name, datos_tr)
+                    # En una transferencia el solicitante del TAG debe ser el
+                    # adquirente (nuevo dueño); si no coincide, se marca motivo.
+                    adq = datos_tr.get("rut_adquirente")
+                    if adq and rut_ticket:
+                        adq_norm = adq.replace(".", "").replace("-", "").upper()
+                        if rut_ticket.replace(".", "").replace("-", "").upper() != adq_norm:
+                            motivos.append("RUT del ticket no es el adquirente")
+                            log.info("Adquirente %s != ticket %s", adq_norm, rut_ticket)
+                    break
 
             # --- Robo + Servipag en paralelo (portales distintos, Chrome propio) ---
             # Semaphore(2) permite 2 Chrome simultáneos. Robo se junta ANTES de

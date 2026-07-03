@@ -210,3 +210,46 @@ Refactors de rendimiento y mantenibilidad. **No** se tocó la lógica de estado
     válido/no-válido definitivo.
   - Robo: cualquier `success=False`.
   - Ninguno reintenta errores de config (Chrome/Playwright ausente).
+
+### 2026-07-03 — GUI: eliminar doble-extracción (mismo fix que bot.py)
+
+- **`gui.py`**: el flujo de `_do_buscar` tenía la misma doble-extracción que se
+  arregló en `bot.py`: el loop principal extraía texto de cada PDF (`extract_text`)
+  y OCR-eaba cada imagen (`ocr_image`), y luego la sección RVM volvía a hacer
+  `OUT_DIR.glob(...)` + `extract_text`/`ocr_image` sobre **todos** los archivos.
+  Fix: cachear el texto por archivo en `textos_por_archivo: dict` durante el loop
+  principal y reusarlo en RVM. Elimina una segunda ronda de OCR de imágenes +
+  re-parseo de PDFs por búsqueda (lo más caro del flujo). Orden preservado
+  (PDFs antes que imágenes; el `break` en el primer RVM encontrado sigue igual).
+- **`gui.py`**: quitada una llamada redundante a `find_ruts(text)` (se calculaba
+  dos veces por PDF; ahora se reusa `ruts`).
+- Sin cambios de comportamiento.
+
+### 2026-07-03 — Solicitud de Transferencia / compraventa (alternativa al RVM)
+
+En lugar del RVM/padrón, a veces el solicitante sube la **Solicitud de
+Transferencia del Registro Civil** basada en un contrato privado de compraventa
+ante notario (PDF escaneado → OCR). Secciones: ACTUAL PROPIETARIO (vendedor) /
+ADQUIRENTE (nuevo dueño) / SOLICITANTE, código PPU (patente), y datos del
+documento (naturaleza COMPRAVENTA, fecha, notario). No hay folio+código
+verificable online como el RVM.
+
+- **`bot.py`**: `es_transferencia_compraventa()` + `extraer_datos_transferencia()`
+  (patente vía ancla "PPU" — más confiable que `find_patentes`, que daba falso
+  positivo `HORA08`; RUT de cada sección vía `_primer_rut_tras()` porque el OCR
+  separa rótulos de valores; fecha anclada en COMPRAVENTA; notario por prefijo
+  "NOT "). Probado contra un documento real (extrae PPU ZB5004, adquirente
+  16.066.831-8, propietario 15.122.931-K, fecha 01-07-2026, notaría PABLO MARTINEZ).
+- **Cotejo con adquirente** (decisión #2): si se detecta transferencia y el RUT
+  del ticket **no** es el del adquirente (nuevo dueño), se agrega motivo "RUT del
+  ticket no es el adquirente" → RECHAZADO. Aplica en `bot.py` y `gui.py`.
+- **Consistencia de RUT por presencia en bot.py** (decisión #3): `procesar_ticket`
+  pasó de conteo (`>1 RUT` → inconsistente) a **presencia** (RUT del ticket debe
+  estar en los docs), alineándose con la GUI. Evita el falso RECHAZADO en batch de
+  docs con varios RUT legítimos (transferencia). **Cambio de lógica de estado en
+  el path CLI/batch.**
+- **`gui.py`**: línea informativa en el reporte cuando se detecta transferencia y
+  no hubo RVM ("Transferencia (compraventa) | PPU ... | adq ... | fecha — revisar
+  manual"). NO fuerza PENDIENTE por sí sola (decisión #1 quedó descartada); solo
+  el cotejo de adquirente afecta el status.
+- Detección afinada sobre **un** documento; con más muestras puede requerir ajuste.

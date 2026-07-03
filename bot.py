@@ -638,6 +638,79 @@ def find_razon_social(text: str) -> list[str]:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Solicitud de Transferencia / compraventa (alternativa al RVM/padrón)
+# ---------------------------------------------------------------------------
+# El solicitante a veces sube, en lugar del certificado RVM o el padrón, la
+# "Solicitud de Transferencia" del Registro Civil basada en un contrato privado
+# de compraventa ante notario. Es un PDF escaneado (va por OCR), con las secciones
+# ACTUAL PROPIETARIO (vendedor) / ADQUIRENTE (nuevo dueño) / SOLICITANTE, el
+# código PPU (patente) y los datos del documento (naturaleza COMPRAVENTA, fecha,
+# notario). No hay folio+código verificable online como el RVM.
+
+_RUT_TRAS_RE_CACHE: dict = {}
+
+
+def _primer_rut_tras(text: str, ancla: str, ventana: int = 250) -> Optional[str]:
+    """Primer RUT que aparece dentro de `ventana` chars tras `ancla`.
+
+    El OCR de estos formularios pone los rótulos en bloque y los valores en otro
+    bloque debajo, así que el RUT del adquirente/propietario es el primer RUT que
+    sigue al encabezado de su sección.
+    """
+    rex = _RUT_TRAS_RE_CACHE.get((ancla, ventana))
+    if rex is None:
+        rex = re.compile(
+            ancla + r"[\s\S]{0,%d}?(\d{1,2}(?:\.?\d{3}){2}[-.]?[\dkK])" % ventana,
+            re.I,
+        )
+        _RUT_TRAS_RE_CACHE[(ancla, ventana)] = rex
+    m = rex.search(text)
+    return _normalize(m.group(1)) if m else None
+
+
+def es_transferencia_compraventa(text: str) -> bool:
+    """Detecta una Solicitud de Transferencia / compraventa del Registro Civil."""
+    T = text.upper()
+    tiene = "SOLICITUD DE TRANSFERENCIA" in T or ("ADQUIRENTE" in T and "PROPIETARIO" in T)
+    ctx = "COMPRAVENTA" in T or "REGISTRO CIVIL" in T
+    return tiene and ctx
+
+
+def extraer_datos_transferencia(text: str) -> dict:
+    """Extrae los datos clave de una Solicitud de Transferencia / compraventa."""
+    res = {
+        "encontrado": False,
+        "patente": None,
+        "rut_adquirente": None,
+        "rut_propietario": None,
+        "rut_solicitante": None,
+        "fecha": None,
+        "notaria": None,
+    }
+    if not es_transferencia_compraventa(text):
+        return res
+    res["encontrado"] = True
+
+    mp = re.search(r"PPU[\s:]*([A-Z]{2}[.\-\s]?\d{3,4}[-.\s]?\d?)", text, re.I)
+    if mp:
+        res["patente"] = normalizar_patente(mp.group(1))
+
+    res["rut_propietario"] = _primer_rut_tras(text, "PROPIETARIO")
+    res["rut_adquirente"] = _primer_rut_tras(text, "ADQUIRENTE")
+    res["rut_solicitante"] = _primer_rut_tras(text, "SOLICITANTE")
+
+    mf = re.search(r"COMPRAVENTA[\s\S]{0,80}?(\d{2}[-/]\d{2}[-/]\d{4})", text, re.I)
+    if mf:
+        res["fecha"] = mf.group(1)
+
+    mn = re.search(r"\bNOT\.?\s+([A-ZÁÉÍÓÚÑ]{3,}(?:[ ]+[A-ZÁÉÍÓÚÑ]{3,}){0,2})", text)
+    if mn:
+        res["notaria"] = mn.group(1).strip()
+
+    return res
+
+
 def _normalize(raw: str) -> Optional[str]:
     c = raw.replace(".", "").replace("-", "")
     if not c or not c[:-1].isdigit():
@@ -785,13 +858,38 @@ def procesar_ticket(
             status_global["similitud_pct"] = vo["similitud_pct"]
 
     # Status
-    ruts_set = set(r.replace(".", "").replace("-", "") for r in all_ruts_encontrados if r)
+    ruts_docs = set(r.replace(".", "").replace("-", "").upper() for r in all_ruts_encontrados if r)
     razones_set = set(r.upper().strip() for r in all_razones_encontradas if r)
     motivos: list[str] = []
-    if len(ruts_set) > 1:
-        motivos.append("RUT inconsistente")
+    # Consistencia de RUT por presencia (igual que la GUI): el RUT del ticket debe
+    # estar entre los RUT hallados en los documentos. Antes era por conteo (>1 RUT
+    # → inconsistente), que daba falsos positivos en docs con varios RUT legítimos
+    # (ej. Solicitud de Transferencia: propietario + adquirente + solicitante).
+    if rut_ticket:
+        rut_ticket_norm = rut_ticket.replace(".", "").replace("-", "").upper()
+        if ruts_docs and rut_ticket_norm not in ruts_docs:
+            motivos.append("RUT inconsistente")
     if len(razones_set) > 1:
         motivos.append("Razón social inconsistente")
+
+    # Solicitud de Transferencia / compraventa (alternativa al RVM/padrón).
+    # En una transferencia, el solicitante del TAG debe ser el adquirente (nuevo
+    # dueño); si el RUT del ticket no es el adquirente, se marca motivo.
+    transferencia = None
+    for text_doc in textos_pdf.values():
+        datos_tr = extraer_datos_transferencia(text_doc)
+        if datos_tr["encontrado"]:
+            transferencia = datos_tr
+            log.info("Transferencia/compraventa detectada: %s", datos_tr)
+            adq = datos_tr.get("rut_adquirente")
+            if adq and rut_ticket:
+                adq_norm = adq.replace(".", "").replace("-", "").upper()
+                if rut_ticket.replace(".", "").replace("-", "").upper() != adq_norm:
+                    motivos.append("RUT del ticket no es el adquirente")
+                    log.info("Adquirente %s != ticket %s", adq_norm, rut_ticket)
+            break
+    result["transferencia"] = transferencia
+
     if status_global["rechazado"]:
         motivos.append("RECHAZADO")
     if status_global["no_vigente"] or status_global["vigente"] is False:
