@@ -3,8 +3,10 @@ Módulo SAP: login + llenado de formulario en SAP CRM WebClient UI.
 """
 
 import asyncio
+import json
 import logging
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -17,6 +19,17 @@ except ImportError:
     async_playwright = None
 
 log = logging.getLogger("sap")
+
+
+def _sap_creds() -> tuple[Optional[str], Optional[str]]:
+    """Lee usuario/clave de SAP desde config.json (junto al .exe o al fuente)."""
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    try:
+        cfg = json.loads((base / "config.json").read_text(encoding="utf-8"))
+        return cfg.get("sap_user"), cfg.get("sap_password")
+    except Exception as e:
+        log.warning("No se pudo leer credenciales SAP de config.json: %s", e)
+        return None, None
 
 SAP_URL = (
     "https://chppas01.autopase.cl:1443/sap(bD1lcyZjPTQwMCZkPW1pbg==)/"
@@ -43,12 +56,20 @@ async def _llenar_input_js(page, selector: str, valor: str) -> bool:
 
 
 async def sap_llenar_async(
-    usuario: str = "CGUERRA",
-    password: str = "Inte.elias*26",
+    usuario: Optional[str] = None,
+    password: Optional[str] = None,
     datos: Optional[dict] = None,
 ) -> dict:
     if async_playwright is None:
         return {"success": False, "error": "Playwright no instalado"}
+
+    # Credenciales desde config.json si no se pasan explícitas
+    if not usuario or not password:
+        cfg_user, cfg_pass = _sap_creds()
+        usuario = usuario or cfg_user
+        password = password or cfg_pass
+    if not usuario or not password:
+        return {"success": False, "error": "Faltan credenciales SAP (config.json: sap_user/sap_password)"}
 
     result = {"success": False, "error": None, "url_final": ""}
 
@@ -287,8 +308,8 @@ async def sap_llenar_async(
 
 
 def sap_llenar(
-    usuario: str = "CGUERRA",
-    password: str = "Inte.elias*26",
+    usuario: Optional[str] = None,
+    password: Optional[str] = None,
     datos: Optional[dict] = None,
 ) -> dict:
     return asyncio.run(sap_llenar_async(usuario, password, datos))

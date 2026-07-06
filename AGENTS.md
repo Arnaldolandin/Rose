@@ -337,3 +337,11 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   y usar `json.JSONDecoder().raw_decode(raw)[0]`, que parsea sólo el objeto del
   ticket e ignora lo que sigue. Ahora devuelve el dict completo sin warning ni
   fallback.
+
+### 2026-07-06 — Credenciales SAP a config.json
+
+- **`sap.py`**: las credenciales de SAP dejaron de estar hardcodeadas. Nuevo
+  `_sap_creds()` las lee de `config.json` (`sap_user`/`sap_password`), resuelto
+  junto al `.exe` (frozen) o al fuente, igual que la GUI. `sap_llenar()` /
+  `sap_llenar_async()` ahora default `None` y toman del config si no se pasan;
+  si faltan, devuelven error claro. `config.json` +`sap_user`/`sap_password`.
