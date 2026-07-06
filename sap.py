@@ -204,6 +204,24 @@ async def sap_llenar_async(
 
             await page.wait_for_timeout(8000)
 
+            # Pantalla de "sesión ya existente" (SID:ANON / sap-system-login=X):
+            # SAP muestra un botón "cont." para continuar; clickearlo para entrar.
+            try:
+                for fr in page.frames:
+                    cont = await fr.evaluate("""() => {
+                        const norm = s => (s||'').replace(/\\s+/g,' ').trim().toLowerCase().replace(/\\.$/,'');
+                        const cands = Array.from(document.querySelectorAll('input[type=submit],input[type=button],button,a,span'));
+                        const el = cands.find(x => ['cont','continuar'].includes(norm(x.value||x.innerText)));
+                        if (el) { const t = norm(el.value||el.innerText); el.click(); return t; }
+                        return null;
+                    }""")
+                    if cont is not None:
+                        log.info("Click en 'cont.' (pantalla de sesión existente)")
+                        await page.wait_for_timeout(6000)
+                        break
+            except Exception as e:
+                log.warning("Error en pantalla 'cont.': %s", e)
+
             url_actual = page.url
             result["url_final"] = url_actual
             log.info("URL después de login: %s", url_actual)
@@ -383,6 +401,28 @@ async def sap_llenar_async(
                 log.info("Proceso SAP completado — Chrome abierto 5 min")
                 await asyncio.sleep(300)
             else:
+                # Cerrar la sesión SAP ("Salir del sistema"): matar Chrome NO libera
+                # la sesión server-side, y en automático se acumularían hasta topar
+                # el límite de sesiones del usuario en SAP.
+                try:
+                    for fr in page.frames:
+                        cerrado = await fr.evaluate("""() => {
+                            const norm = s => (s||'').replace(/\\s+/g,' ').trim().toLowerCase();
+                            const cands = Array.from(document.querySelectorAll('a,span,td,div,input,img'));
+                            const el = cands.find(x => norm(x.innerText||x.value||x.title) === 'salir del sistema')
+                                    || cands.find(x => norm(x.innerText||x.value||x.title).includes('salir del sistema'))
+                                    || cands.find(x => norm(x.title).includes('salir'));
+                            if (el) { (el.closest('a') || el).click(); return true; }
+                            return false;
+                        }""")
+                        if cerrado:
+                            log.info("Sesión SAP cerrada (Salir del sistema)")
+                            break
+                    else:
+                        log.warning("No se encontró 'Salir del sistema' — sesión no cerrada explícitamente")
+                    await page.wait_for_timeout(2500)
+                except Exception as e:
+                    log.warning("Error cerrando sesión SAP: %s", e)
                 log.info("Proceso SAP completado")
 
     except Exception as e:

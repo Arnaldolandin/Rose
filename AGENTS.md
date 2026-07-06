@@ -396,3 +396,18 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   default `True` (deja Chrome abierto para que el operador trabaje la cuenta).
 - Costo: ~40-60s extra por ticket con RUT válido (el status espera a SAP).
   Verificado en vivo (RUT 16333784-3 → "No", 37s).
+
+### 2026-07-06 — SAP: cerrar sesión ("Salir del sistema")
+
+- **Matar Chrome NO libera la sesión server-side de SAP.** Con SAP automático por
+  ticket (login cada vez), las sesiones del usuario se acumulan hasta topar el
+  límite → SAP deja de cargar la CRM (login devuelve 1 solo frame, URL con
+  `SID:ANON`/`sap-system-login=X`). Por eso `sap_llenar(mantener_abierto=False)`
+  ahora clickea **"Salir del sistema"** antes de matar Chrome.
+- **Pantalla de sesión existente**: si tras el login SAP muestra la pantalla de
+  "sesión ya conectada" (`SID:ANON` / `sap-system-login=X`, 1 solo frame), tiene un
+  botón **"cont."** para continuar. `sap_llenar_async` ahora lo clickea tras el
+  login → entra reusando/continuando la sesión (antes fallaba: CRM no cargaba).
+- Con ambos (click "cont." al entrar + "Salir del sistema" al salir) el manejo de
+  sesiones quedó sólido. Verificado en vivo: click cont. → 11 frames → mora="No" →
+  sesión cerrada, 43s.
