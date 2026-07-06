@@ -687,6 +687,9 @@ class App(tk.Tk):
                 txt = f"Desconectado por mora: {dm}" if dm else "OK ✓"
                 self.after(0, self.sap_status_var.set, txt)
                 log.info("SAP OK — Desconectado por mora: %s", dm)
+                # "Sí" (desconectado por mora) bloquea la aprobación
+                if dm and dm.strip().lower() in ("si", "sí"):
+                    self.after(0, self._agregar_motivo_rechazo, "Cliente desconectado por mora")
             else:
                 msg = res.get("error", "Error desconocido")
                 self.after(0, self.sap_status_var.set, f"Error: {msg}")
@@ -794,6 +797,16 @@ class App(tk.Tk):
         self.result_vars["status"].set(text)
         if self._status_label:
             self._status_label.configure(foreground=color)
+
+    def _agregar_motivo_rechazo(self, motivo: str):
+        """Fuerza RECHAZADO agregando `motivo`, preservando los motivos previos."""
+        actual = self.result_vars["status"].get()
+        if actual.startswith("RECHAZADO") and actual.endswith(")"):
+            nuevo = actual[:-1] + f", {motivo})"
+        else:
+            nuevo = f"RECHAZADO ({motivo})"
+        self._set_status(nuevo, "red")
+        log.warning("STATUS -> %s", nuevo)
 
     def _toggle_log(self):
         if self._log_visible.get():

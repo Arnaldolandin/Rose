@@ -376,3 +376,9 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
 - Nota: el campo NO está en la pantalla de búsqueda ni en "Identificar cuenta";
   vive en "Hoja informativa de cuenta". Ubicado con capturas de pantalla del flujo
   real (dumps del DOM no lo encontraban solos).
+- **`gui.py`**: si "Desconectado por mora" = **Sí**, `_do_sap_llenar` fuerza
+  **RECHAZADO** vía `_agregar_motivo_rechazo("Cliente desconectado por mora")`, que
+  preserva los motivos previos (APROBADO/PENDIENTE → RECHAZADO; un RECHAZADO
+  existente suma el motivo dentro de los paréntesis). Como SAP se corre con el
+  botón "Llenar SAP" (después del status), el bloqueo se aplica al terminar ese
+  paso.
