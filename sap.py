@@ -71,7 +71,7 @@ async def sap_llenar_async(
     if not usuario or not password:
         return {"success": False, "error": "Faltan credenciales SAP (config.json: sap_user/sap_password)"}
 
-    result = {"success": False, "error": None, "url_final": ""}
+    result = {"success": False, "error": None, "url_final": "", "desconectado_mora": None}
 
     if not CHROME_PATH:
         return {**result, "error": "Chrome no encontrado"}
@@ -324,6 +324,56 @@ async def sap_llenar_async(
                             log.info("  frame %s:", (fr.url or '')[:70])
                             for it in info:
                                 log.info("    %s", it)
+
+                # --- Leer "Desconectado por mora" (Sí/No) ---
+                # Tras el Enter abre "Identificar cuenta"; el campo está en el menú
+                # izquierdo "Hoja informativa de cuenta". Se clickea ese menú y se lee
+                # el valor de la caja de texto al lado del rótulo.
+                await page.wait_for_timeout(8000)
+                for fr in page.frames:
+                    try:
+                        r = await fr.evaluate("""() => {
+                            const norm = s => (s||'').replace(/\\s+/g,' ').trim().toLowerCase();
+                            const el = Array.from(document.querySelectorAll('a,td,span,div'))
+                                .find(x => norm(x.innerText) === 'hoja informativa de cuenta');
+                            if (el) { (el.closest('a') || el).click(); return true; }
+                            return false;
+                        }""")
+                    except Exception:
+                        continue
+                    if r:
+                        log.info("Click en 'Hoja informativa de cuenta'")
+                        break
+                await page.wait_for_timeout(8000)
+
+                mora_js = """() => {
+                    const norm = s => (s||'').replace(/\\s+/g,' ').trim();
+                    const valOf = el => { const i = el && el.querySelector ? el.querySelector('input,textarea,select') : null;
+                                          return i ? (i.value||'') : (el ? norm(el.innerText) : ''); };
+                    for (const el of Array.from(document.querySelectorAll('td,span,label,div'))) {
+                        const t = norm(el.innerText || '');
+                        if (!t || t.length > 60) continue;
+                        if (!t.toLowerCase().includes('desconectado por mora')) continue;
+                        let val = '';
+                        const td = el.closest('td');
+                        if (td && td.nextElementSibling) val = valOf(td.nextElementSibling);
+                        if (!val && el.nextElementSibling) val = valOf(el.nextElementSibling);
+                        if (!val && td && td.parentElement) { const inp = td.parentElement.querySelector('input,textarea'); if (inp) val = inp.value || ''; }
+                        if (val) return norm(val);
+                    }
+                    return null;
+                }"""
+                for fr in page.frames:
+                    try:
+                        val = await fr.evaluate(mora_js)
+                    except Exception:
+                        continue
+                    if val:
+                        result["desconectado_mora"] = val
+                        log.info("SAP: Desconectado por mora = %s", val)
+                        break
+                if result.get("desconectado_mora") is None:
+                    log.warning("No se pudo leer 'Desconectado por mora'")
             else:
                 log.info("Sin RUT para ingresar en SAP")
 

@@ -683,8 +683,10 @@ class App(tk.Tk):
             with self._chrome_lock:
                 res = sap_llenar(datos=datos)
             if res.get("success"):
-                self.after(0, self.sap_status_var.set, "OK ✓")
-                log.info("SAP: formulario llenado correctamente")
+                dm = res.get("desconectado_mora")
+                txt = f"Desconectado por mora: {dm}" if dm else "OK ✓"
+                self.after(0, self.sap_status_var.set, txt)
+                log.info("SAP OK — Desconectado por mora: %s", dm)
             else:
                 msg = res.get("error", "Error desconocido")
                 self.after(0, self.sap_status_var.set, f"Error: {msg}")

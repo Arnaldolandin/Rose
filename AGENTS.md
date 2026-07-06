@@ -363,3 +363,16 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
     `rut_frame.locator('input[id*="zztaxnum"]').first.press("Enter")` (evento
     nativo) con fallback a `KeyboardEvent` sintético.
   - Ventana de Chrome abierta 5 min para ver la búsqueda.
+
+### 2026-07-06 — SAP: leer "Desconectado por mora"
+
+- **`sap.py`**: tras el Enter (que abre "Identificar cuenta"), se clickea el menú
+  izquierdo **"Hoja informativa de cuenta"** y se lee el valor de la caja de texto
+  al lado del rótulo **"Desconectado por mora:"** (Sí/No). Se devuelve en
+  `result["desconectado_mora"]` y se loguea (`SAP: Desconectado por mora = No`).
+  El valor se busca por rótulo → celda/hermano siguiente (input/select/texto).
+  Verificado en vivo (RUT 16333784-3 → "No").
+- **`gui.py`**: el status de SAP ahora muestra `Desconectado por mora: No/Sí`.
+- Nota: el campo NO está en la pantalla de búsqueda ni en "Identificar cuenta";
+  vive en "Hoja informativa de cuenta". Ubicado con capturas de pantalla del flujo
+  real (dumps del DOM no lo encontraban solos).
