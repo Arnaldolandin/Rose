@@ -345,3 +345,21 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   junto al `.exe` (frozen) o al fuente, igual que la GUI. `sap_llenar()` /
   `sap_llenar_async()` ahora default `None` y toman del config si no se pasan;
   si faltan, devuelven error claro. `config.json` +`sap_user`/`sap_password`.
+
+### 2026-07-06 — SAP: llenar solo el RUT + Enter (búsqueda de cuenta)
+
+- **`sap.py`**: el llenado genérico se reemplazó por: tras el login, ingresar
+  **solo el RUT** en el campo RUT y presionar Enter para disparar la búsqueda de
+  cuenta. Aprendizajes de la corrida real:
+  - SAP CRM usa **iframes anidados**; el formulario carga en un frame profundo
+    (ej. Frame[9]) que **tarda**. Se hace **polling hasta ~40s** probando el
+    `fill_js` en TODOS los `page.frames` hasta encontrar el campo.
+  - El campo RUT tiene `zztaxnum` en el id (id dinámico tipo
+    `C3_W18_V19_V20_searchcustomer_struct.zztaxnum`); se localiza por rótulo "RUT"
+    o por `input[id*="rut"]`.
+  - **RUT con guion**: se reconstruye `cuerpo-DV` (ej. `16333784-3`) venga como
+    venga el origen (con/sin puntos, con/sin guion).
+  - **Enter**: `Frame` no expone `.keyboard`; se usa
+    `rut_frame.locator('input[id*="zztaxnum"]').first.press("Enter")` (evento
+    nativo) con fallback a `KeyboardEvent` sintético.
+  - Ventana de Chrome abierta 5 min para ver la búsqueda.

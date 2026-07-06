@@ -230,67 +230,106 @@ async def sap_llenar_async(
                      [i for i, f in enumerate(page.frames) if f == target_frame][0] if target_frame != page else 0,
                      (target_frame.url or "")[:80])
 
-            # --- LLENAR FORMULARIO ---
-            if datos:
-                log.info("Intentando llenar formulario...")
-                await target_frame.wait_for_timeout(2000)
+            # --- LLENAR SOLO EL RUT + BUSCAR CUENTA ---
+            # SAP CRM usa iframes anidados; el campo puede estar en cualquiera,
+            # así que se prueba en TODOS los frames de la página.
+            # RUT sin puntos y CON guion antes del DV (ej. 16333784-3), reconstruido
+            # venga como venga el origen.
+            _rc = (datos or {}).get("rut", "").replace(".", "").replace("-", "").strip().upper()
+            rut = (_rc[:-1] + "-" + _rc[-1]) if len(_rc) > 1 else _rc
 
-                # Llenar un campo a la vez para evitar errores de serialización
-                for campo, valor in datos.items():
-                    if not valor:
-                        continue
+            if rut:
+                log.info("Ingresando RUT en SAP: %s", rut)
+
+                fill_js = """(rut) => {
+                    let input = null;
+                    const labels = Array.from(document.querySelectorAll('label, span, div.urTxtLbl, td, th'));
+                    const label = labels.find(l => ((l.innerText||'').trim().toUpperCase().replace(/[:.]/g,'')) === 'RUT')
+                               || labels.find(l => (l.innerText||'').toUpperCase().includes('RUT'));
+                    if (label) {
+                        const forId = label.getAttribute('for');
+                        if (forId) input = document.getElementById(forId);
+                        if (!input) {
+                            let el = label.nextElementSibling;
+                            while (el && !input) {
+                                if (el.tagName === 'INPUT') input = el;
+                                else if (el.querySelector) input = el.querySelector('input');
+                                el = el.nextElementSibling;
+                            }
+                        }
+                        if (!input && label.parentElement) input = label.parentElement.querySelector('input');
+                    }
+                    if (!input) input = document.querySelector('input[placeholder*="RUT" i], input[id*="rut" i], input[name*="rut" i]');
+                    if (input) {
+                        input.focus();
+                        input.value = rut;
+                        input.dispatchEvent(new Event('input', {bubbles:true}));
+                        input.dispatchEvent(new Event('change', {bubbles:true}));
+                        return 'ok:' + (input.id || input.name || 'sin-id');
+                    }
+                    return 'no';
+                }"""
+
+                # El formulario de cuenta carga en un frame anidado que tarda en
+                # aparecer: reintentar en TODOS los frames hasta ~40s.
+                rut_frame = None
+                for _ in range(20):
+                    for fr in page.frames:
+                        try:
+                            res = await fr.evaluate(fill_js, rut)
+                        except Exception:
+                            continue
+                        if res and res.startswith('ok'):
+                            rut_frame = fr
+                            log.info("Campo RUT OK en frame %s -> %s", (fr.url or '')[:60], res)
+                            break
+                    if rut_frame:
+                        break
+                    await page.wait_for_timeout(2000)
+
+                if rut_frame:
+                    # Enter en el campo RUT para disparar la búsqueda de cuenta.
+                    # locator.press() manda un KeyboardEvent nativo (Frame no expone
+                    # .keyboard). El input de SAP tiene "zztaxnum" en el id (número
+                    # de identificación tributaria = RUT).
                     try:
-                        ok = await target_frame.evaluate(
-                            """({campo, valor}) => {
-                                const labels = Array.from(document.querySelectorAll('label, span, div.urTxtLbl'));
-                                let input = null;
-                                // 1. Buscar por label que contenga el texto
-                                const label = labels.find(l => l.innerText.toLowerCase().includes(campo));
-                                if (label) {
-                                    const forId = label.getAttribute('for');
-                                    if (forId) input = document.getElementById(forId);
-                                    if (!input) {
-                                        let el = label.nextElementSibling;
-                                        while (el) {
-                                            if (el.tagName==='INPUT' || el.tagName==='SELECT' || el.tagName==='TEXTAREA') {
-                                                input = el; break;
-                                            }
-                                            el = el.nextElementSibling;
-                                        }
-                                    }
-                                    if (!input) {
-                                        const parent = label.parentElement;
-                                        if (parent) input = parent.querySelector('input, select, textarea');
-                                    }
-                                }
-                                // 2. Buscar por placeholder
-                                if (!input) {
-                                    input = document.querySelector('input[placeholder*="' + campo + '"], textarea[placeholder*="' + campo + '"]');
-                                }
-                                // 3. Buscar por name/id genérico
-                                if (!input) {
-                                    input = document.querySelector('input[id*="' + campo + '"], input[name*="' + campo + '"]');
-                                }
-                                if (input) {
-                                    input.value = valor;
-                                    input.dispatchEvent(new Event('input', {bubbles: true}));
-                                    input.dispatchEvent(new Event('change', {bubbles: true}));
-                                    return true;
-                                }
-                                return false;
-                            }""",
-                            {"campo": campo, "valor": str(valor)}
-                        )
-                        if ok:
-                            log.info("Campo '%s' llenado", campo)
-                        else:
-                            log.info("Campo '%s' no encontrado", campo)
+                        await rut_frame.locator('input[id*="zztaxnum"]').first.press("Enter")
+                        await page.wait_for_timeout(1000)
+                        log.info("Enter presionado en campo RUT — búsqueda disparada")
                     except Exception as e:
-                        log.warning("Error llenando campo '%s': %s", campo, str(e)[:80])
+                        log.warning("Error presionando Enter (locator): %s — fallback JS", e)
+                        try:
+                            await rut_frame.evaluate("""() => {
+                                const el = document.activeElement || document.querySelector('input[id*="zztaxnum"]');
+                                if (el) ['keydown','keypress','keyup'].forEach(t =>
+                                    el.dispatchEvent(new KeyboardEvent(t, {key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true})));
+                            }""")
+                            await page.wait_for_timeout(1000)
+                            log.info("Enter (fallback JS) enviado al campo RUT")
+                        except Exception as e2:
+                            log.warning("Fallback Enter también falló: %s", e2)
+                else:
+                    log.warning("Campo RUT no encontrado tras esperar — dump de inputs visibles:")
+                    for fr in page.frames:
+                        try:
+                            info = await fr.evaluate(
+                                """() => Array.from(document.querySelectorAll('input,select,textarea'))
+                                    .filter(el => el.offsetParent !== null)
+                                    .slice(0,40)
+                                    .map(el => (el.tagName+' id='+el.id+' name='+el.name+' ph='+(el.placeholder||'')+' type='+(el.type||'')))"""
+                            )
+                        except Exception:
+                            continue
+                        if info:
+                            log.info("  frame %s:", (fr.url or '')[:70])
+                            for it in info:
+                                log.info("    %s", it)
+            else:
+                log.info("Sin RUT para ingresar en SAP")
 
             result["success"] = True
-            log.info("Proceso SAP completado — Chrome abierto 30s")
-            await asyncio.sleep(30)
+            log.info("Proceso SAP completado — Chrome abierto 5 min")
+            await asyncio.sleep(300)
 
     except Exception as e:
         log.error("Error SAP: %s", e)
