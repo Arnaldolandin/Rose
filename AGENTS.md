@@ -382,3 +382,17 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
   existente suma el motivo dentro de los paréntesis). Como SAP se corre con el
   botón "Llenar SAP" (después del status), el bloqueo se aplica al terminar ese
   paso.
+
+### 2026-07-06 — SAP automático + mora en el reporte
+
+- **SAP ahora corre automático en `_do_buscar`**, en paralelo con Robo/Servipag
+  (thread `_run_sap_mora`, bajo `_chrome_lock`/Semaphore). Se **junta ANTES** del
+  status: si "Desconectado por mora: Sí" agrega motivo "Cliente desconectado por
+  mora" → RECHAZADO. Se agrega la línea `SAP: Desconectado por mora: No/Sí` al
+  reporte. Solo corre si el RUT del ticket es válido (`validar_rut`).
+- **`sap.py` — `mantener_abierto: bool = True`**: nuevo parámetro. En automático
+  se llama con `mantener_abierto=False` (cierra apenas lee la mora, ~37s, NO
+  bloquea el `_chrome_lock` 5 min). El botón manual "Llenar SAP" sigue con el
+  default `True` (deja Chrome abierto para que el operador trabaje la cuenta).
+- Costo: ~40-60s extra por ticket con RUT válido (el status espera a SAP).
+  Verificado en vivo (RUT 16333784-3 → "No", 37s).

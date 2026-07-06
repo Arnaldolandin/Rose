@@ -59,6 +59,7 @@ async def sap_llenar_async(
     usuario: Optional[str] = None,
     password: Optional[str] = None,
     datos: Optional[dict] = None,
+    mantener_abierto: bool = True,
 ) -> dict:
     if async_playwright is None:
         return {"success": False, "error": "Playwright no instalado"}
@@ -378,8 +379,11 @@ async def sap_llenar_async(
                 log.info("Sin RUT para ingresar en SAP")
 
             result["success"] = True
-            log.info("Proceso SAP completado — Chrome abierto 5 min")
-            await asyncio.sleep(300)
+            if mantener_abierto:
+                log.info("Proceso SAP completado — Chrome abierto 5 min")
+                await asyncio.sleep(300)
+            else:
+                log.info("Proceso SAP completado")
 
     except Exception as e:
         log.error("Error SAP: %s", e)
@@ -400,8 +404,9 @@ def sap_llenar(
     usuario: Optional[str] = None,
     password: Optional[str] = None,
     datos: Optional[dict] = None,
+    mantener_abierto: bool = True,
 ) -> dict:
-    return asyncio.run(sap_llenar_async(usuario, password, datos))
+    return asyncio.run(sap_llenar_async(usuario, password, datos, mantener_abierto=mantener_abierto))
 
 
 if __name__ == "__main__":

@@ -1332,10 +1332,24 @@ class App(tk.Tk):
                 except Exception as e:
                     sp_holder["error"] = e
 
+            sap_holder: dict = {}
+
+            def _run_sap_mora():
+                if not rut_ticket or not validar_rut(rut_ticket):
+                    return
+                try:
+                    log.info("SAP: consultando 'Desconectado por mora' para RUT=%s...", rut_ticket)
+                    with self._chrome_lock:
+                        sap_holder["res"] = sap_llenar(datos={"rut": rut_ticket}, mantener_abierto=False)
+                except Exception as e:
+                    sap_holder["error"] = e
+
             robo_thread = threading.Thread(target=_run_robo, daemon=True)
             sp_thread = threading.Thread(target=_run_sp, daemon=True)
+            sap_thread = threading.Thread(target=_run_sap_mora, daemon=True)
             robo_thread.start()
             sp_thread.start()
+            sap_thread.start()
 
             # Robo: se junta antes del status (su motivo afecta el resultado)
             robo_report = "Robo: —"
@@ -1357,6 +1371,28 @@ class App(tk.Tk):
                     robo_report = f"Robo: Error ({robo_res.get('error', 'desconocido')})"
                     log.warning("Consulta robo no disponible: %s", robo_res.get("error"))
             reporte.append(robo_report)
+
+            # SAP: se junta antes del status. "Desconectado por mora: Sí" bloquea.
+            sap_report = "SAP: —"
+            sap_thread.join()
+            if "error" in sap_holder:
+                sap_report = f"SAP: Error ({sap_holder['error']})"
+                log.warning("Error consultando SAP: %s", sap_holder["error"])
+            elif "res" in sap_holder:
+                sap_res = sap_holder["res"]
+                if sap_res.get("success"):
+                    dm = sap_res.get("desconectado_mora")
+                    if dm:
+                        sap_report = f"SAP: Desconectado por mora: {dm}"
+                        if dm.strip().lower() in ("si", "sí"):
+                            motivos.append("Cliente desconectado por mora")
+                            log.warning("Cliente DESCONECTADO POR MORA")
+                    else:
+                        sap_report = "SAP: OK (mora no leída)"
+                else:
+                    sap_report = f"SAP: Error ({sap_res.get('error', 'desconocido')})"
+                    log.warning("SAP no disponible: %s", sap_res.get("error"))
+            reporte.append(sap_report)
 
             if sim is not None:
                 reporte.append(f"Similitud: {sim:.2f}%")
