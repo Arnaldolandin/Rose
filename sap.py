@@ -122,13 +122,6 @@ async def sap_llenar_async(
             except Exception as e:
                 log.warning("Error dump inputs: %s", e)
 
-            # Screenshot
-            try:
-                await page.screenshot(path=debug_dir / "sap_pagina.png")
-                log.info("Screenshot guardado")
-            except Exception:
-                pass
-
             # --- LOGIN SAP ---
             log.info("Haciendo login SAP...")
 

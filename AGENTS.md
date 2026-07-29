@@ -446,11 +446,19 @@ andamiaje sobraba. Removido (58 líneas, sin cambio de comportamiento):
   frame), ambos a nivel INFO: servían para descubrir qué campos tenía la pantalla,
   pero en producción inundan el panel de log de la GUI con datos del cliente.
 
+Removido después, en el mismo barrido:
+
+- **Screenshot `sap_pagina.png`** de la fase de login. Mismo defecto: escribía al
+  `mkdtemp` que el `finally` borra. `sap.py` ya no toma screenshots.
+  Nota: `debug_dir` sigue existiendo, pero ya solo cumple de `--user-data-dir`
+  del Chrome que se lanza — el nombre quedó engañoso.
+
 Se conservó a propósito:
 
 - El `wait_for_timeout(10000)` tras el click en "Datos de cliente". Es funcional
   (espera la carga del frame), no debug. Los demás saltos de frame del archivo
   usan 8000; bajarlo a 8000 alinearía la convención pero no es verificable sin
   correr contra SAP en vivo, y el flujo de 10s ya está probado.
-- Los dumps de la fase de login (líneas ~110-130, ~330): son código anterior ya
-  verificado y siguen siendo el diagnóstico cuando el login o el campo RUT falla.
+- Los **dumps de inputs** de la fase de login (~línea 106) y del campo RUT
+  (~línea 325): a diferencia de los screenshots, sí llegan al log y son el
+  diagnóstico cuando el login o la búsqueda por RUT falla.
