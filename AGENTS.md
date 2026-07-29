@@ -411,3 +411,25 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
 - Con ambos (click "cont." al entrar + "Salir del sistema" al salir) el manejo de
   sesiones quedó sólido. Verificado en vivo: click cont. → 11 frames → mora="No" →
   sesión cerrada, 43s.
+
+### 2026-07-07 — SAP: "Datos del cliente" — verificar nombre + email
+
+- **`sap.py`**: tras leer "Desconectado por mora", ahora click en **"Datos de cliente"**
+  (menú izquierdo de SAP CRM — OJO: el menú dice "Datos de cliente", NO "del").
+  Extrae **Nombre** + **Apellidos** de los labels, los combina y devuelve
+  `nombre_sap`. Busca **email** en labels, inputs y patrón `@` en el body →
+  `email_sap`. Dump de labels + inputs para debug.
+- **`gui.py`**: dos flujos actualizados (automático `_do_buscar` y manual
+  `_do_sap_llenar`):
+  - Pasa `nombre` + `email` del ticket a `sap_llenar(datos=...)`.
+  - Compara nombre de ticket vs SAP con **normalización de tildes/acentos**
+    (`unicodedata.normalize('NFD')` → strip ASCII): ANDRÉS = ANDRES.
+  - Compara email case-insensitive.
+  - Si no coinciden → motivo `"Nombre no coincide con SAP"` / `"Email no coincide
+    con SAP"` → RECHAZADO.
+- **Bug selector**: el menú dice "Datos de cliente" (no "del"). Selector corregido
+  a match exacto (`<=30 chars`) para evitar que un div padre con todo el menú
+  coincida con `includes()`.
+- Verificado con ticket 454552: nombre SAP "FELIPE ANDRES AGUILAR BARBOSA" coincide
+  con ticket (con normalización de tildes). Email SAP "FELIPEAGUILAR.B@GMAIL.COM"
+  coincide con ticket.

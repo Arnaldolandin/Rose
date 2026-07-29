@@ -72,7 +72,8 @@ async def sap_llenar_async(
     if not usuario or not password:
         return {"success": False, "error": "Faltan credenciales SAP (config.json: sap_user/sap_password)"}
 
-    result = {"success": False, "error": None, "url_final": "", "desconectado_mora": None}
+    result = {"success": False, "error": None, "url_final": "", "desconectado_mora": None,
+              "nombre_sap": None, "email_sap": None}
 
     if not CHROME_PATH:
         return {**result, "error": "Chrome no encontrado"}
@@ -393,6 +394,172 @@ async def sap_llenar_async(
                         break
                 if result.get("desconectado_mora") is None:
                     log.warning("No se pudo leer 'Desconectado por mora'")
+
+                # --- Navegar a "Datos de cliente" (menú izquierdo) ---
+                # El menú izquierdo de SAP CRM tiene items como <a> con texto exacto.
+                click_ok = False
+                for fr in page.frames:
+                    try:
+                        r = await fr.evaluate("""() => {
+                            const norm = s => (s||'').replace(/\\s+/g,' ').trim().toLowerCase();
+                            // Buscar solo en <a> y <span> con texto corto (<=30 chars)
+                            const candidates = Array.from(document.querySelectorAll('a,span,td'))
+                                .filter(x => {
+                                    const t = norm(x.innerText || '');
+                                    return t.length > 3 && t.length <= 30
+                                        && (t === 'datos de cliente' || t === 'datos del cliente');
+                                });
+                            if (candidates.length > 0) {
+                                candidates[0].click();
+                                return norm(candidates[0].innerText);
+                            }
+                            return null;
+                        }""")
+                    except Exception:
+                        continue
+                    if r:
+                        log.info("Click en '%s' (frame %s)", r, (fr.url or '')[:60])
+                        click_ok = True
+                        break
+                if not click_ok:
+                    log.warning("No se encontró 'Datos de cliente' en ningún frame")
+                await page.wait_for_timeout(10000)
+
+                # Screenshot post "Datos de cliente"
+                try:
+                    await page.screenshot(path=debug_dir / "sap_datos_cliente.png")
+                    log.info("Screenshot post 'Datos de cliente' guardado")
+                except Exception:
+                    pass
+
+                # Dump todos los inputs visibles para ver qué campos tiene "Datos de cliente"
+                for fr in page.frames:
+                    try:
+                        inputs_dump = await fr.evaluate("""() => {
+                            return Array.from(document.querySelectorAll('input:not([type=hidden]),textarea,select'))
+                                .filter(el => el.offsetParent !== null)
+                                .slice(0, 40)
+                                .map(el => ({
+                                    id: el.id || '',
+                                    name: el.name || '',
+                                    type: el.type || '',
+                                    value: (el.value || '').substring(0, 100),
+                                    placeholder: el.placeholder || '',
+                                }));
+                        }""")
+                        if inputs_dump:
+                            log.info("Inputs post-Datos de cliente (%s):", (fr.url or '')[:60])
+                            for inp in inputs_dump:
+                                log.info("  id=%-40s name=%-30s val=%s", inp["id"][:40], inp["name"][:30], inp["value"][:80])
+                    except Exception:
+                        continue
+
+                # Extraer nombre completo del cliente (Nombre + Apellidos en SAP)
+                nombre_js = """() => {
+                    const norm = s => (s||'').replace(/\\s+/g,' ').trim();
+                    const valOf = el => { const i = el && el.querySelector ? el.querySelector('input,textarea,select') : null;
+                                          return i ? (i.value||'') : (el ? norm(el.innerText) : ''); };
+                    // Buscar "Nombre:" y "Apellidos:" por separado
+                    let nombre = '', apellidos = '';
+                    for (const el of Array.from(document.querySelectorAll('td,span,label,div'))) {
+                        const t = norm(el.innerText || '').toLowerCase();
+                        if (!t || t.length > 40) continue;
+                        const td = el.closest('td');
+                        let val = '';
+                        if (td && td.nextElementSibling) val = valOf(td.nextElementSibling);
+                        if (!val && el.nextElementSibling) val = valOf(el.nextElementSibling);
+                        if (!val && td && td.parentElement) { const inp = td.parentElement.querySelector('input,textarea'); if (inp) val = inp.value || ''; }
+                        if (val && val.length > 1) {
+                            if (t === 'nombre:' || t === 'nombre') nombre = val;
+                            if (t === 'apellidos:' || t === 'apellidos') apellidos = val;
+                        }
+                    }
+                    if (nombre && apellidos) return (nombre + ' ' + apellidos).trim();
+                    if (nombre) return nombre;
+                    return null;
+                }"""
+                for fr in page.frames:
+                    try:
+                        val = await fr.evaluate(nombre_js)
+                    except Exception:
+                        continue
+                    if val:
+                        result["nombre_sap"] = val
+                        log.info("SAP: Nombre del cliente = %s", val)
+                        break
+                if result.get("nombre_sap") is None:
+                    log.warning("No se pudo leer nombre del cliente en SAP")
+
+                # Dump de todos los labels/valores visibles para debug
+                try:
+                    for fr in page.frames:
+                        try:
+                            labels_dump = await fr.evaluate("""() => {
+                                const norm = s => (s||'').replace(/\\s+/g,' ').trim();
+                                const results = [];
+                                for (const el of Array.from(document.querySelectorAll('td,span,label,div'))) {
+                                    const t = norm(el.innerText || '');
+                                    if (!t || t.length < 2 || t.length > 80) continue;
+                                    const td = el.closest('td');
+                                    let val = '';
+                                    if (td && td.nextElementSibling) {
+                                        const inp = td.nextElementSibling.querySelector('input,textarea,select');
+                                        val = inp ? (inp.value||'') : norm(td.nextElementSibling.innerText);
+                                    }
+                                    if (val) results.push(t + ' = ' + val);
+                                }
+                                return results.slice(0, 80);
+                            }""")
+                            if labels_dump:
+                                log.info("Labels post-Datos del Cliente (%s):", (fr.url or '')[:50])
+                                for ld in labels_dump:
+                                    log.info("  %s", ld)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+                # Extraer email del cliente — buscar en labels, inputs y texto completo
+                email_js = """() => {
+                    const norm = s => (s||'').replace(/\\s+/g,' ').trim();
+                    const valOf = el => { const i = el && el.querySelector ? el.querySelector('input,textarea,select') : null;
+                                          return i ? (i.value||'') : (el ? norm(el.innerText) : ''); };
+                    // 1) Buscar por rótulos de email
+                    const labels = ['correo', 'email', 'e-mail', 'correo electrónico',
+                                    'correo electronico', 'mail', 'electrón'];
+                    for (const el of Array.from(document.querySelectorAll('td,span,label,div'))) {
+                        const t = norm(el.innerText || '').toLowerCase();
+                        if (!t || t.length > 60) continue;
+                        if (!labels.some(l => t === l || t.includes(l))) continue;
+                        let val = '';
+                        const td = el.closest('td');
+                        if (td && td.nextElementSibling) val = valOf(td.nextElementSibling);
+                        if (!val && el.nextElementSibling) val = valOf(el.nextElementSibling);
+                        if (!val && td && td.parentElement) { const inp = td.parentElement.querySelector('input,textarea'); if (inp) val = inp.value || ''; }
+                        if (val && val.includes('@')) return val;
+                    }
+                    // 2) Buscar en inputs ocultos o visibles que contengan @
+                    for (const inp of Array.from(document.querySelectorAll('input,textarea'))) {
+                        const v = (inp.value || '').trim();
+                        if (v && v.includes('@') && v.length > 5 && v.length < 200) return v;
+                    }
+                    // 3) Buscar en todo el texto visible un patrón email
+                    const body = document.body ? (document.body.innerText || '') : '';
+                    const m = body.match(/[\\w.+-]+@[\\w.-]+\\.[a-zA-Z]{2,}/);
+                    if (m) return m[0];
+                    return null;
+                }"""
+                for fr in page.frames:
+                    try:
+                        val = await fr.evaluate(email_js)
+                    except Exception:
+                        continue
+                    if val:
+                        result["email_sap"] = val
+                        log.info("SAP: Email del cliente = %s", val)
+                        break
+                if result.get("email_sap") is None:
+                    log.warning("No se pudo leer email del cliente en SAP")
             else:
                 log.info("Sin RUT para ingresar en SAP")
 

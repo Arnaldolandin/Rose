@@ -3,6 +3,7 @@ import logging
 import re
 import threading
 import sys
+import unicodedata
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
@@ -690,6 +691,35 @@ class App(tk.Tk):
                 # "Sí" (desconectado por mora) bloquea la aprobación
                 if dm and dm.strip().lower() in ("si", "sí"):
                     self.after(0, self._agregar_motivo_rechazo, "Cliente desconectado por mora")
+
+                # Verificar nombre y email contra datos del ticket
+                nombre_ticket = datos.get("nombre", "").strip()
+                email_ticket = datos.get("email", "").strip()
+                nombre_sap = (res.get("nombre_sap") or "").strip()
+                email_sap = (res.get("email_sap") or "").strip()
+
+                if nombre_sap:
+                    log.info("SAP: Nombre ticket='%s' vs SAP='%s'", nombre_ticket, nombre_sap)
+                if email_sap:
+                    log.info("SAP: Email ticket='%s' vs SAP='%s'", email_ticket, email_sap)
+
+                # Coincidencia de nombre: debe ser EXACTAMENTE igual que en el carnet (ticket)
+                # Normaliza tildes/acentos (SAP no los guarda): ANDRÉS = ANDRES
+                if nombre_ticket and nombre_sap:
+                    _sin_tilde = lambda s: unicodedata.normalize('NFD', s).encode('ascii', 'ignore').decode('ascii')
+                    if _sin_tilde(nombre_ticket.strip().lower()) != _sin_tilde(nombre_sap.strip().lower()):
+                        log.warning("Nombre NO coincide: ticket='%s' SAP='%s'", nombre_ticket, nombre_sap)
+                        self.after(0, self._agregar_motivo_rechazo, "Nombre no coincide con SAP")
+                    else:
+                        log.info("Nombre OK: coincide con SAP")
+
+                # Coincidencia de email
+                if email_ticket and email_sap:
+                    if email_ticket.lower().strip() != email_sap.lower().strip():
+                        log.warning("Email NO coincide: ticket='%s' SAP='%s'", email_ticket, email_sap)
+                        self.after(0, self._agregar_motivo_rechazo, "Email no coincide con SAP")
+                    else:
+                        log.info("Email OK: coincide con SAP")
             else:
                 msg = res.get("error", "Error desconocido")
                 self.after(0, self.sap_status_var.set, f"Error: {msg}")
@@ -1332,6 +1362,8 @@ class App(tk.Tk):
                 except Exception as e:
                     sp_holder["error"] = e
 
+            nombre_ticket = self.result_vars["nombre"].get()
+            email_ticket = self.result_vars["email"].get()
             sap_holder: dict = {}
 
             def _run_sap_mora():
@@ -1340,7 +1372,10 @@ class App(tk.Tk):
                 try:
                     log.info("SAP: consultando 'Desconectado por mora' para RUT=%s...", rut_ticket)
                     with self._chrome_lock:
-                        sap_holder["res"] = sap_llenar(datos={"rut": rut_ticket}, mantener_abierto=False)
+                        sap_holder["res"] = sap_llenar(
+                            datos={"rut": rut_ticket, "nombre": nombre_ticket, "email": email_ticket},
+                            mantener_abierto=False,
+                        )
                 except Exception as e:
                     sap_holder["error"] = e
 
@@ -1373,6 +1408,7 @@ class App(tk.Tk):
             reporte.append(robo_report)
 
             # SAP: se junta antes del status. "Desconectado por mora: Sí" bloquea.
+            # También verifica nombre y email contra datos del ticket.
             sap_report = "SAP: —"
             sap_thread.join()
             if "error" in sap_holder:
@@ -1389,6 +1425,26 @@ class App(tk.Tk):
                             log.warning("Cliente DESCONECTADO POR MORA")
                     else:
                         sap_report = "SAP: OK (mora no leída)"
+
+                    # Verificar nombre del cliente contra SAP (exacto, como en el carnet)
+                    # Normaliza tildes/acentos (SAP no los guarda): ANDRÉS = ANDRES
+                    nombre_sap = (sap_res.get("nombre_sap") or "").strip()
+                    if nombre_ticket and nombre_sap:
+                        _sin_tilde = lambda s: unicodedata.normalize('NFD', s).encode('ascii', 'ignore').decode('ascii')
+                        if _sin_tilde(nombre_ticket.strip().lower()) != _sin_tilde(nombre_sap.strip().lower()):
+                            log.warning("Nombre NO coincide: ticket='%s' SAP='%s'", nombre_ticket, nombre_sap)
+                            motivos.append("Nombre no coincide con SAP")
+                        else:
+                            log.info("Nombre OK: coincide con SAP")
+
+                    # Verificar email del cliente contra SAP
+                    email_sap = (sap_res.get("email_sap") or "").strip()
+                    if email_ticket and email_sap:
+                        if email_ticket.lower().strip() != email_sap.lower().strip():
+                            log.warning("Email NO coincide: ticket='%s' SAP='%s'", email_ticket, email_sap)
+                            motivos.append("Email no coincide con SAP")
+                        else:
+                            log.info("Email OK: coincide con SAP")
                 else:
                     sap_report = f"SAP: Error ({sap_res.get('error', 'desconocido')})"
                     log.warning("SAP no disponible: %s", sap_res.get("error"))
