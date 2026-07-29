@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 from cdp_common import CHROME_PATH, find_free_port, launch_chrome, wait_for_cdp
 
@@ -37,8 +38,17 @@ def _formatear_rut(rut: str) -> str:
     return ''.join(nums_fmt) + '-' + dv
 
 
-async def _esperar_fuera_de_cola(page, timeout=120):
-    """Espera a que salga de la sala de espera Queue-it y el SPA cargue."""
+async def _esperar_fuera_de_cola(page, timeout=120) -> Optional[str]:
+    """Espera a que salga de la sala de espera Queue-it y el SPA cargue.
+
+    Devuelve None si todo salió bien, o el motivo de la falla. Son dos casos muy
+    distintos que antes se reportaban con el mismo texto ("SII en cola - tiempo
+    excedido"), lo que impedía distinguirlos:
+      - Sigue en la sala de espera → el SII está saturado; reintentar sirve.
+      - Salió de la cola pero el SPA nunca renderizó `input.rut-form` → puede ser
+        lentitud, pero si se vuelve permanente es que el SII cambió el HTML y hay
+        que actualizar el selector.
+    """
     inicio = time.time()
     while time.time() - inicio < timeout:
         url = page.url
@@ -49,14 +59,25 @@ async def _esperar_fuera_de_cola(page, timeout=120):
                     "document.querySelector('input.rut-form') !== null"
                 )
                 if has_rut:
-                    return True
+                    return None
                 await page.wait_for_timeout(1000)
-            return False
+            return "SII fuera de cola pero el SPA no renderizó (input.rut-form) en 30s"
         await page.wait_for_timeout(2000)
-    return False
+    return f"SII sigue en sala de espera tras {timeout}s"
 
 
-async def consultar_sii_async(rut: str, keep_open: bool = False) -> dict:
+async def consultar_sii_async(
+    rut: str,
+    keep_open: bool = False,
+    perfil: Optional[Path] = None,
+) -> dict:
+    """Consulta el SII una vez.
+
+    `perfil` permite compartir el mismo `--user-data-dir` entre reintentos: la
+    posición en la cola Queue-it vive en una cookie del navegador, así que con un
+    perfil nuevo por intento el reintento volvía al final de la fila. Cuando se
+    pasa, el llamador es dueño del directorio y de borrarlo.
+    """
     if async_playwright is None:
         return {"success": False, "error": "Playwright no instalado"}
 
@@ -77,7 +98,8 @@ async def consultar_sii_async(rut: str, keep_open: bool = False) -> dict:
     if not CHROME_PATH:
         return {**result, "error": "Chrome no encontrado"}
 
-    debug_dir = Path(tempfile.mkdtemp(prefix="sii_"))
+    perfil_propio = perfil is None
+    debug_dir = Path(tempfile.mkdtemp(prefix="sii_")) if perfil_propio else perfil
     debug_port = find_free_port()
     proc = None
 
@@ -97,10 +119,10 @@ async def consultar_sii_async(rut: str, keep_open: bool = False) -> dict:
             await page.goto(SII_URL, wait_until="load", timeout=60000)
 
             log.info("Esperando salir de cola Queue-it...")
-            ok = await _esperar_fuera_de_cola(page, timeout=120)
-            if not ok:
-                result["error"] = "SII en cola - tiempo excedido"
-                await page.screenshot(path=debug_dir / "sii_cola.png")
+            motivo = await _esperar_fuera_de_cola(page, timeout=120)
+            if motivo:
+                result["error"] = motivo
+                log.warning("%s", motivo)
                 return result
 
             log.info("Fuera de cola, SPA renderizado")
@@ -236,7 +258,10 @@ async def consultar_sii_async(rut: str, keep_open: bool = False) -> dict:
                 proc.wait(timeout=5)
             except Exception:
                 pass
-        shutil.rmtree(debug_dir, ignore_errors=True)
+        # Si el perfil lo pasó el llamador, es suyo: lo reusa el siguiente
+        # intento y lo borra él al terminar.
+        if perfil_propio:
+            shutil.rmtree(debug_dir, ignore_errors=True)
 
     return result
 
@@ -261,15 +286,26 @@ def consultar_sii(rut: str, keep_open: bool = False, intentos: int = 2) -> dict:
     """
     if keep_open:
         return asyncio.run(consultar_sii_async(rut, keep_open=True))
-    res: dict = {}
-    for intento in range(1, intentos + 1):
-        res = asyncio.run(consultar_sii_async(rut, keep_open=False))
-        if not _fallo_reintentable(res):
-            return res
-        if intento < intentos:
-            log.warning("SII intento %s/%s no concluyente (%s); reintentando...",
-                        intento, intentos, res.get("error") or "sin datos")
-    return res
+    # Un solo perfil de Chrome para todos los intentos. Queue-it guarda la
+    # posición en la cola en una cookie: con un perfil nuevo por intento, el
+    # reintento arrancaba de cero al final de la fila — justo lo contrario de
+    # lo que se busca al reintentar.
+    perfil = Path(tempfile.mkdtemp(prefix="sii_"))
+    try:
+        res: dict = {}
+        for intento in range(1, intentos + 1):
+            res = asyncio.run(
+                consultar_sii_async(rut, keep_open=False, perfil=perfil)
+            )
+            if not _fallo_reintentable(res):
+                return res
+            if intento < intentos:
+                log.warning("SII intento %s/%s no concluyente (%s); reintentando "
+                            "con el mismo perfil (conserva el lugar en la cola)...",
+                            intento, intentos, res.get("error") or "sin datos")
+        return res
+    finally:
+        shutil.rmtree(perfil, ignore_errors=True)
 
 
 if __name__ == "__main__":

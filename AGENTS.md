@@ -462,3 +462,60 @@ Se conservó a propósito:
 - Los **dumps de inputs** de la fase de login (~línea 106) y del campo RUT
   (~línea 325): a diferencia de los screenshots, sí llegan al log y son el
   diagnóstico cuando el login o la búsqueda por RUT falla.
+
+### 2026-07-07 — Entorno roto, OCR que no degradaba, y SII: reintento que jugaba en contra
+
+Sesión de compilar + ejecutar + monitorear. Salieron tres cosas, dos de ellas
+bugs reales que solo se ven corriendo la app.
+
+**Entorno (no es código, pero costó encontrarlo).** Faltaban `PyPDF2`,
+`pytesseract` y `playwright` del `requirements.txt`, y `pandas 2.1.3` convivía
+con `numpy 2.2.6` — ABI incompatibles. `pytesseract` hace `import pandas` dentro
+de un `try/except ModuleNotFoundError`, pero el choque de ABI lanza `ValueError`,
+que se escapaba. Se subió pandas a 2.3.3. También faltaba el binario de
+Tesseract: instalado 5.4.0.20240606 vía `winget install UB-Mannheim.TesseractOCR`,
+que cae justo en `C:\Program Files\Tesseract-OCR\tesseract.exe`, la ruta fija de
+`bot.py`. `PyInstaller` tampoco estaba (no figura en `requirements.txt`).
+
+**`bot.py` — el `except ImportError` del bloque de OCR era demasiado angosto.**
+Con el `ValueError` de arriba, `import bot` reventaba y con él **toda la app**,
+en vez de degradar a "sin OCR" que es lo que el bloque quiere hacer. Tres
+cambios:
+- `except ImportError` → `except Exception`, guardando el motivo en `_OCR_ERROR`.
+- **La descarga de `spa.traineddata` se separó del import**, con su propio `try`
+  y su `_TESSDATA_ERROR`. Estaban fusionadas: si fallaba la red, el `except`
+  dejaba `pytesseract = None` y perdías el OCR entero aunque el stack estuviera
+  sano. Ahora Tesseract cae a su tessdata del sistema.
+- El motivo se reporta en dos lados: `log.warning` al arrancar **y** dentro de
+  `ocr_image()`. El segundo importa porque `gui.py:61` hace `log.handlers.clear()`
+  antes de instalar el suyo → el aviso de import NO llega al panel de la GUI.
+
+**`RVM: —` en certificados escaneados = era el Tesseract faltante.** El fallback
+a OCR funcionaba bien (detectaba los PDFs sin capa de texto y los mandaba a
+OCR); lo que fallaba era el binario. PDF escaneado → 0 texto → sin keywords
+`R.V.M.`/`INSCRIPCION` → `RVM: —`. Se confirmó por contraste: los PDFs *con*
+capa de texto sí verificaban (dos tickets dieron `Certificado RVM no válido`).
+
+**`sii.py` — el reintento perdía el lugar en la cola.** `consultar_sii_async`
+hacía `mkdtemp` propio en cada llamada, o sea perfil de Chrome nuevo por intento.
+Queue-it guarda la posición en la cola en una cookie del navegador → el reintento
+**volvía al final de la fila**, justo lo contrario de lo que se busca. Ahora
+acepta `perfil` y el wrapper síncrono crea uno solo para todos los intentos y lo
+borra en un `finally`. Sin `perfil` el comportamiento es el de antes (el módulo
+sigue usable suelto).
+
+**`sii.py` — dos fallas distintas compartían mensaje.** `_esperar_fuera_de_cola`
+devolvía `bool`, y el `False` tapaba dos casos muy distintos bajo el texto único
+"SII en cola - tiempo excedido". Pasó a `Optional[str]`:
+- `"SII sigue en sala de espera tras 120s"` → saturación real, reintentar sirve.
+- `"SII fuera de cola pero el SPA no renderizó (input.rut-form) en 30s"` → si se
+  vuelve permanente, el SII cambió el HTML y hay que actualizar el selector.
+Ambos siguen clasificando como reintentables en `_fallo_reintentable`. De paso se
+sacó el `screenshot(debug_dir / "sii_cola.png")`: mismo caso que en `sap.py`, el
+`finally` borra `debug_dir`. Quedan `sii_no_rut.png` y `sii_resultado.png`.
+
+**Despliegue — `dist/config.json` se desincroniza en silencio.** `Rose.spec` no
+empaqueta `config.json` (a propósito: permite cambiar credenciales sin
+recompilar), así que hay que copiarlo a mano a `dist/` tras cada cambio. Estaba
+viejo, sin `sap_user`/`sap_password` → el `.exe` fallaba todo SAP con "Faltan
+credenciales SAP". **Acordarse de `cp config.json dist/` al compilar.**

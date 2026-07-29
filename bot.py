@@ -35,29 +35,44 @@ try:
 except ImportError:
     PyPDF2 = None
 
+# El stack de OCR es opcional: sin él, extract_text() sigue andando con PyPDF2 y
+# ocr_image() devuelve "". Se guarda el motivo para poder reportarlo más abajo.
+_OCR_ERROR: Optional[str] = None
+_TESSDATA_ERROR: Optional[str] = None
+
 try:
     import pytesseract.pytesseract as pytesseract_impl
     import pytesseract
     from PIL import Image
     import os
     pytesseract_impl.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    # Asegurar que TESSDATA_PREFIX apunte a una carpeta con spa.traineddata
-    if not os.environ.get("TESSDATA_PREFIX"):
-        _td = Path.home() / ".tessdata"
-        _td.mkdir(exist_ok=True)
-        _lang = _td / "spa.traineddata"
-        if not _lang.exists():
-            import urllib.request
-            print("[BOT] Descargando spa.traineddata...")
-            urllib.request.urlretrieve(
-                "https://github.com/tesseract-ocr/tessdata/raw/main/spa.traineddata",
-                str(_lang)
-            )
-        os.environ["TESSDATA_PREFIX"] = str(_td)
-except ImportError:
+except Exception as e:
+    # `except ImportError` no alcanza: pytesseract importa pandas, y un choque de
+    # ABI numpy/pandas lanza ValueError. Eso escapaba y volteaba la app entera al
+    # arrancar, en vez de degradar a "sin OCR", que es lo que este bloque quiere.
     pytesseract = None
     pytesseract_impl = None
     Image = None
+    _OCR_ERROR = f"{type(e).__name__}: {e}"
+else:
+    # Asegurar que TESSDATA_PREFIX apunte a una carpeta con spa.traineddata.
+    # Va aparte del import: es una descarga por red, y que falle no debe
+    # desactivar el OCR (Tesseract puede tener su propio tessdata del sistema).
+    try:
+        if not os.environ.get("TESSDATA_PREFIX"):
+            _td = Path.home() / ".tessdata"
+            _td.mkdir(exist_ok=True)
+            _lang = _td / "spa.traineddata"
+            if not _lang.exists():
+                import urllib.request
+                print("[BOT] Descargando spa.traineddata...")
+                urllib.request.urlretrieve(
+                    "https://github.com/tesseract-ocr/tessdata/raw/main/spa.traineddata",
+                    str(_lang)
+                )
+            os.environ["TESSDATA_PREFIX"] = str(_td)
+    except Exception as e:
+        _TESSDATA_ERROR = f"{type(e).__name__}: {e}"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +80,11 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("integro")
+
+if _OCR_ERROR:
+    log.warning("OCR no disponible (%s) — no se leerán imágenes ni PDFs escaneados", _OCR_ERROR)
+if _TESSDATA_ERROR:
+    log.warning("No se pudo preparar spa.traineddata (%s) — se usará el tessdata del sistema", _TESSDATA_ERROR)
 
 FRONTEND = "https://tag-admin.integrocorp.cl"
 BACKEND = "https://tag-back.integrocorp.cl"
@@ -317,7 +337,7 @@ def _ocr_pil(img) -> str:
 
 def ocr_image(path: Path) -> str:
     if pytesseract is None:
-        log.error("pip install pytesseract")
+        log.error("OCR no disponible: %s", _OCR_ERROR or "pip install pytesseract")
         return ""
     try:
         img = Image.open(path)
