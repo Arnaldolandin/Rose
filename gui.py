@@ -617,7 +617,9 @@ class App(tk.Tk):
     def _mostrar_resultado_rvm(self, res: dict):
         self.rvm_btn.configure(state="normal")
         if not res.get("success"):
-            self.rvm_status_var.set("Error")
+            # Sin veredicto (la página no rindió, error de red, etc.). No es lo
+            # mismo que "no válido": se muestra el motivo para que se revise a mano.
+            self.rvm_status_var.set(res.get("mensaje") or res.get("error") or "Error")
             return
         if res.get("valido") is True:
             self.rvm_status_var.set("Válido ✓")

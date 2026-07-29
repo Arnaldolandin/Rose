@@ -558,3 +558,46 @@ resolver el visor —bajar el PDF real desde la SPA— o dejarlo a revisión man
 primer intento. Con un presupuesto de 120 s, eso explica el error intermitente
 "tiempo excedido" en días cargados — y por qué el fix del perfil compartido entre
 reintentos importa: antes cada reintento hacía la fila entera de nuevo.
+
+### 2026-07-07 — RVM: "no pude leer la página" se reportaba como "certificado no válido"
+
+**Falso RECHAZADO.** El peor bug de la sesión, encontrado probando el ticket 454523.
+
+`verificar_rvm_async` tenía tres ramas tras clickear Consultar:
+1. body contiene "El certificado es v..." → `valido=True`.
+2. body contiene "error" + "folio"/"código" → `valido=False`. **Única rama en que
+   el Registro Civil realmente se pronuncia.**
+3. else → esperaba 5 s más y, si seguía sin aparecer, `valido=False` +
+   `success=True` + `mensaje="No se pudo determinar"`.
+
+La rama 3 convertía "no pude leer la página" en **un veredicto en firme de
+certificado inválido**. Y `bot.py` lo tomaba al pie de la letra:
+`if valido is True: ... else: motivos.append("Certificado RVM no válido")` — ese
+`else` capturaba también el `None`/indeterminado → **RECHAZADO**.
+
+Medido en vivo: la página del Registro Civil devolvió **204 chars** en los dos
+intentos (el SII, de comparación, rinde 3.022). O sea prácticamente vacía: el RC
+nunca dijo que el certificado fuera inválido.
+
+Cambios:
+- **`rvm.py`**: rama 3 → `valido=None`, `success=False`, con `log.warning` que
+  incluye el tamaño del body (así se ve al toque cuando la página no rindió).
+  Con `success=False` el reintento sigue funcionando vía `_fallo_reintentable`.
+- **`bot.py`**: solo un `valido is False` **explícito** agrega motivo. `None` va a
+  un warning "revisar a mano".
+- **`gui.py`**: `_mostrar_resultado_rvm` mostraba `Error` pelado ante
+  `success=False`; ahora muestra el mensaje real. El flujo automático
+  (`gui.py:1276`) ya chequeaba `valido is False` explícitamente y estaba bien —
+  lo que lo rompía era que `rvm.py` le mandaba `False`.
+
+Verificado en el mismo ticket 454523:
+```
+antes:    RECHAZADO (Documento vencido (258 días), Certificado RVM no válido)
+después:  RECHAZADO (Documento vencido (258 días))
+```
+
+**Pendiente aparte, y no menor**: no se sabe *por qué* el portal del RC devuelve
+204 chars — lentitud, cambio del sitio o bloqueo. Este fix hace que el bot deje de
+mentir sobre eso, pero no lo arregla. Mientras siga así, **ningún** certificado RVM
+se puede verificar (antes todos salían "no válido" → rechazos falsos en masa; ahora
+todos salen "sin veredicto" → revisión manual). Vale investigarlo aparte.

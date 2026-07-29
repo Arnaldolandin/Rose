@@ -1096,14 +1096,19 @@ def procesar_ticket(
                     rvm_resultado = verificar_rvm(
                         extraccion["folio"], extraccion["codigo_verificacion"]
                     )
-                    if rvm_resultado.get("success"):
-                        if rvm_resultado.get("valido") is True:
-                            log.info("RVM: CERTIFICADO VÁLIDO ✓")
-                        else:
-                            motivos.append("Certificado RVM no válido")
-                            log.info("RVM: certificado no válido")
+                    # Solo un `valido is False` explícito rechaza. `valido is None`
+                    # significa "el Registro Civil no se pronunció" (página que no
+                    # rindió, o falta el código en el PDF): eso se revisa a mano,
+                    # no se asume inválido — antes generaba RECHAZADO falsos.
+                    if rvm_resultado.get("success") and rvm_resultado.get("valido") is True:
+                        log.info("RVM: CERTIFICADO VÁLIDO ✓")
+                    elif rvm_resultado.get("success") and rvm_resultado.get("valido") is False:
+                        motivos.append("Certificado RVM no válido")
+                        log.info("RVM: certificado no válido")
                     else:
-                        log.warning("RVM no disponible: %s", rvm_resultado.get("error"))
+                        log.warning("RVM sin veredicto (%s) — revisar a mano",
+                                    rvm_resultado.get("mensaje")
+                                    or rvm_resultado.get("error") or "sin detalle")
                     break  # Solo procesar el primer RVM encontrado
     except Exception as e:
         log.warning("Error verificando RVM: %s", e)

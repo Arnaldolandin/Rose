@@ -269,9 +269,20 @@ async def verificar_rvm_async(
                     result["mensaje"] = "Certificado válido"
                     result["success"] = True
                 else:
-                    result["valido"] = False
+                    # La página no dijo ni que sí ni que no: no rindió contenido
+                    # legible (se han visto bodies de ~200 chars, prácticamente
+                    # vacíos). Esto NO es lo mismo que "el certificado es
+                    # inválido" — el Registro Civil nunca se pronunció.
+                    # Antes se marcaba valido=False con success=True, o sea un
+                    # veredicto en firme, y el llamador agregaba "Certificado RVM
+                    # no válido" a los motivos → RECHAZADO falso.
+                    result["valido"] = None
                     result["mensaje"] = "No se pudo determinar"
-                    result["success"] = True
+                    result["success"] = False
+                    log.warning(
+                        "RVM sin veredicto: la página no rindió resultado legible "
+                        "(%d chars) — no se asume inválido", len(body_text2)
+                    )
 
             if keep_open:
                 log.info("Chrome mantenido abierto 60s...")
@@ -295,8 +306,9 @@ async def verificar_rvm_async(
 def _fallo_reintentable(res: dict) -> bool:
     """True si el resultado RVM parece un fallo transitorio (vale reintentar).
 
-    Reintenta ante `success=False` (campo folio/código no encontrado, excepciones)
-    o cuando el modal de resultado no apareció (`mensaje="No se pudo determinar"`).
+    Reintenta ante `success=False`, que cubre el campo folio/código no encontrado,
+    las excepciones, y la página que no rindió resultado legible
+    (`mensaje="No se pudo determinar"`, sin veredicto).
     NO reintenta ante errores de configuración (Chrome/Playwright ausente), ni ante
     un veredicto definitivo (válido / no válido), ni cuando faltaba el código
     (success=True, valido=None: caso definitivo "verificar manualmente").
