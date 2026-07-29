@@ -241,17 +241,54 @@ def extract_file_urls(rsc_text: str) -> list[dict]:
         ext = url.split("?")[0].rsplit(".", 1)[-1].lower() if "." in url else ""
         tipo = "pdf" if ext == "pdf" else "img" if ext in ("jpg", "jpeg", "png", "gif") else "otro"
         files.append({"url": url, "tipo": tipo})
-    # El pipeline solo procesa "pdf" e "img": los "otro" se descartan río abajo.
-    # Sin este aviso el ticket parece "sin adjuntos" cuando en realidad había algo
-    # que nadie miró — ej. links al visor de Autofact (una SPA, no un archivo),
-    # que aparecen como "Documentos Adicionales" y no traen extensión en la URL.
-    otros = [f for f in files if f["tipo"] == "otro"]
-    if otros:
-        log.warning("%s adjunto(s) ignorado(s), no son PDF ni imagen — revisar a mano:",
-                    len(otros))
-        for f in otros:
-            log.warning("  %s", f["url"].split("?")[0][:110])
     return files
+
+
+def resolver_adjuntos(files: list[dict]) -> list[dict]:
+    """Expande los adjuntos que no son archivos y avisa de los que quedan sin usar.
+
+    Hoy el único expandible es el visor de Autofact: el ticket trae un link a una
+    SPA, no un archivo, y detrás hay 5 PDFs (contrato, CAV, cédula del comprador,
+    solicitud y comprobante de transferencia). Ver `autofact.py`.
+
+    Lo que queda en "otro" tras expandir se descarta río abajo (el pipeline solo
+    procesa "pdf" e "img"), así que se loguea: sin el aviso el ticket parecía "sin
+    adjuntos" cuando en realidad había algo que nadie miró.
+    """
+    resueltos: list[dict] = []
+    pendientes: list[dict] = []
+
+    for f in files:
+        if f["tipo"] != "otro":
+            resueltos.append(f)
+            continue
+        docs = []
+        try:
+            from autofact import es_url_autofact, listar_documentos
+            if es_url_autofact(f["url"]):
+                docs = listar_documentos(f["url"])
+        except Exception as e:
+            log.warning("Error expandiendo adjunto Autofact: %s", e)
+        if not docs:
+            pendientes.append(f)
+            continue
+        log.info("Autofact: %s documento(s) recuperados — %s",
+                 len(docs), ", ".join(d["nombre"] for d in docs))
+        for d in docs:
+            ext = d["url"].split("?")[0].rsplit(".", 1)[-1].lower()
+            resueltos.append({
+                "url": d["url"],
+                "tipo": "img" if ext in ("jpg", "jpeg", "png", "gif") else "pdf",
+                "origen": "autofact",
+                "nombre": d["nombre"],
+            })
+
+    if pendientes:
+        log.warning("%s adjunto(s) ignorado(s), no son PDF ni imagen — revisar a mano:",
+                    len(pendientes))
+        for f in pendientes:
+            log.warning("  %s", f["url"].split("?")[0][:110])
+    return resueltos + pendientes
 
 
 # ---------------------------------------------------------------------------
@@ -807,15 +844,39 @@ def extraer_datos_transferencia(text: str) -> dict:
         res["tipo"] = "notarial"
         # Adquirente = comprador; propietario = vendedor (contrato en prosa).
         # Anclajes con sinónimos para tolerar la redacción de distintas notarías.
-        res["rut_adquirente"] = (
-            _rut_antes(text, r"(?:como\s+)?(?:Comprador|Compradora|parte\s+compradora)")
-            or _rut_antes(text, r"compra\s+y\s+adquiere")
-            or _rut_antes(text, r"adquiere\s+para")
+        # Dos layouts conviven, y hay que leerlos en direcciones opuestas:
+        #  - PROSA (notarial clásico): el RUT va ANTES del rótulo
+        #      "... CI 16.191.948-9, como Comprador ..."
+        #  - FORMULARIO (ej. los contratos que vienen de Autofact): el rótulo va
+        #    ANTES del valor
+        #      "Vendedor / RUT: 10.037.200-2 ... Firma del Comprador / RUT: ..."
+        # Leer un formulario con los anclajes de prosa devuelve el RUT del OTRO,
+        # o el mismo para ambos. Como una compraventa tiene por definición dos
+        # partes DISTINTAS, se prueban ambas lecturas y se acepta la primera que
+        # las produzca; si ninguna lo logra, no se afirma nada. Eso importa
+        # porque `rut_adquirente` alimenta un motivo de RECHAZADO: es preferible
+        # no cotejar a rechazar sobre una lectura que ya sabemos incoherente.
+        lecturas = (
+            (  # prosa
+                _rut_antes(text, r"(?:como\s+)?(?:Comprador|Compradora|parte\s+compradora)")
+                or _rut_antes(text, r"compra\s+y\s+adquiere")
+                or _rut_antes(text, r"adquiere\s+para"),
+                _rut_antes(text, r"(?:como\s+)?(?:Vendedor|Vendedora|parte\s+vendedora)")
+                or _rut_antes(text, r"vende\s+y\s+transfiere"),
+            ),
+            (  # formulario
+                _primer_rut_tras(text, r"(?:Firma\s+del\s+)?(?:Comprador|Compradora)"),
+                _primer_rut_tras(text, r"(?:Firma\s+del\s+)?(?:Vendedor|Vendedora)"),
+            ),
         )
-        res["rut_propietario"] = (
-            _rut_antes(text, r"(?:como\s+)?(?:Vendedor|Vendedora|parte\s+vendedora)")
-            or _rut_antes(text, r"vende\s+y\s+transfiere")
-        )
+        for adq, prop in lecturas:
+            if adq and prop and adq != prop:
+                res["rut_adquirente"], res["rut_propietario"] = adq, prop
+                break
+        else:
+            log.warning("Compraventa: no se pudieron distinguir comprador y vendedor "
+                        "(prosa=%s/%s, formulario=%s/%s) — se descarta el cotejo",
+                        lecturas[0][0], lecturas[0][1], lecturas[1][0], lecturas[1][1])
 
     # Fecha: RC → tras COMPRAVENTA; notarial → "de fecha DD-MM-AAAA"
     mf = re.search(r"COMPRAVENTA[\s\S]{0,80}?(\d{2}[-/]\s*\d{2}[-/]\d{4})", text, re.I)
@@ -914,7 +975,7 @@ def procesar_ticket(
         return result
 
     ticket = parse_ticket(rsc)
-    files = extract_file_urls(rsc)
+    files = resolver_adjuntos(extract_file_urls(rsc))
     pdfs = [f for f in files if f["tipo"] == "pdf"]
     imgs = [f for f in files if f["tipo"] == "img"]
 

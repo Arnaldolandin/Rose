@@ -18,6 +18,7 @@ from bot import (
     fetch_desk_rsc,
     parse_ticket,
     extract_file_urls,
+    resolver_adjuntos,
     download_pdf,
     extract_text,
     find_nombres,
@@ -1039,7 +1040,7 @@ class App(tk.Tk):
                 return
 
             ticket = parse_ticket(rsc)
-            files = extract_file_urls(rsc)
+            files = resolver_adjuntos(extract_file_urls(rsc))
             pdfs = [f for f in files if f["tipo"] == "pdf"]
             imgs = [f for f in files if f["tipo"] == "img"]
 

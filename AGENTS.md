@@ -639,3 +639,70 @@ todos extraen folio y código correctos. Sin regresión en los formatos que ya a
 **Nota**: este bug estaba tapado por el de los 204 chars del portal del RC — el
 resultado era "sin veredicto" igual. Son independientes: aun con el portal sano,
 454517 habría fallado por el código mal extraído.
+
+### 2026-07-07 — Autofact: recuperar los documentos que el pipeline no veía
+
+Medido sobre 20 tickets `454xxx` al azar: **6 de 20 (30%) no tenían un solo
+documento procesable**. Su único adjunto ("Documentos Adicionales") es un link al
+visor SPA de Autofact — 364 bytes de HTML que cargan React, no un archivo. Esos
+tickets pasaban por todo el pipeline sin nada que analizar y quedaban PENDIENTE
+por construcción.
+
+**Cómo se encontraron los PDFs**: cargando el visor con Chrome headless y mirando
+el tráfico. La SPA consulta un API sin autenticación:
+
+```
+GET https://xoyx149gh7.execute-api.us-east-1.amazonaws.com/latest/v2/transference/
+    gateway/retail-api-transference/transference-wizard/v1/transference/
+    document/tag/{TOKEN}/token/all
+```
+
+El `{TOKEN}` es el último segmento del path del visor. Devuelve JSON con `path`
+(URL directa al PDF), fecha y tipo. **Anda con `requests` puro** — probado en los
+6 tickets, 5 documentos en cada uno: CONTRATO, CAV, CÉDULA DEL COMPRADOR,
+SOLICITUD TRANSFERENCIA y COMPROBANTE TRANSFERENCIA DE VEHÍCULO.
+
+- **`autofact.py`** (nuevo): HTTP puro, sin Chrome, mismo patrón que `notarial.py`.
+  Ante cualquier fallo devuelve lista vacía — nunca afirma que el ticket no tiene
+  documentos.
+- **`bot.py`**: `resolver_adjuntos(files)` expande los links de Autofact y avisa
+  de lo que quede sin resolver. Se dejó FUERA de `extract_file_urls`, que es una
+  función pura de regex, para no meterle una llamada de red. El aviso de adjuntos
+  ignorados de `c5f6d15` se movió acá: ahora reporta solo lo que quedó sin
+  resolver *después* de expandir.
+- **`gui.py`** / **`bot.py`**: ambos puntos de entrada llaman
+  `resolver_adjuntos(extract_file_urls(rsc))` — los dos flujos quedan parejos.
+- **`Rose.spec`**: `autofact` en `hiddenimports`.
+
+**Falso positivo que esto destapó, y hubo que arreglar antes de poder usarlo.**
+El contrato de Autofact es un FORMULARIO (rótulo antes del valor):
+
+```
+Vendedor / RUT: 10.037.200-2  ...  Firma del Comprador / RUT: 16.191.948-9
+```
+
+mientras que `extraer_datos_transferencia` estaba escrito para contratos en PROSA
+(RUT antes del rótulo: "... CI 16.191.948-9, como Comprador ..."). Leído con los
+anclajes de prosa, `rut_adquirente` salía con el RUT del **vendedor** → motivo
+"RUT del ticket no es el adquirente" → **RECHAZADO falso**, cuando el solicitante
+sí era el comprador.
+
+Arreglo: se prueban las dos lecturas (prosa con `_rut_antes`, formulario con
+`_primer_rut_tras`) y se acepta la primera que produzca **dos partes DISTINTAS**
+— que es lo que una compraventa tiene por definición. Si ninguna lo logra, ambos
+quedan en `None` y el cotejo no corre: preferible no cotejar a rechazar sobre una
+lectura que ya sabemos incoherente.
+
+Verificado en 454310:
+```
+antes (sin Autofact):    PENDIENTE  (no había documentos)
+con extractor roto:      RECHAZADO (RUT del ticket no es el adquirente, Documento vencido)
+ahora:                   RECHAZADO (Documento vencido (254 días))   ← adq=16.191.948-9 = RUT del ticket
+```
+
+**Pendiente detectado, NO tocado**: `_rut_antes` devuelve el RUT más a la
+izquierda dentro de su ventana de 160 chars, no el más cercano al rótulo. En un
+contrato en prosa donde ambas partes caen juntas, da el RUT equivocado. Es
+preexistente. No se arregló porque no hay ningún contrato notarial en prosa en el
+repo para validar el cambio, y estos anclajes se afinaron contra documentos
+reales — tocarlos a ciegas es la receta de regresión que documenta este archivo.
