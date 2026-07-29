@@ -4,4 +4,8 @@ pdfs/
 .env
 dist/
 build/
+# PyInstaller autogenera .spec al correr `pyinstaller script.py`, y esos no
+# valen la pena. Rose.spec es la excepcion: esta hecho a mano (hiddenimports,
+# excludes, icono) y sin el no se puede compilar el .exe.
 *.spec
+!Rose.spec
