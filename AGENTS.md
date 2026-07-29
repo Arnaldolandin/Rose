@@ -433,3 +433,24 @@ se manejan ambos (`tipo` = `transferencia_rc` | `notarial`).
 - Verificado con ticket 454552: nombre SAP "FELIPE ANDRES AGUILAR BARBOSA" coincide
   con ticket (con normalización de tildes). Email SAP "FELIPEAGUILAR.B@GMAIL.COM"
   coincide con ticket.
+
+### 2026-07-07 — SAP: limpieza del andamiaje de debug de "Datos de cliente"
+
+El bloque de "Datos de cliente" se escribió explorando el DOM de SAP CRM a ciegas.
+Una vez que los selectores de `nombre_js`/`email_js` quedaron verificados, el
+andamiaje sobraba. Removido (58 líneas, sin cambio de comportamiento):
+
+- **Screenshot `sap_datos_cliente.png`**: escribía a `debug_dir`, que es un
+  `mkdtemp` que el `finally` borra con `shutil.rmtree` → nunca se podía mirar.
+- **Dump de inputs** (hasta 40 por frame) y **dump de labels** (hasta 80 por
+  frame), ambos a nivel INFO: servían para descubrir qué campos tenía la pantalla,
+  pero en producción inundan el panel de log de la GUI con datos del cliente.
+
+Se conservó a propósito:
+
+- El `wait_for_timeout(10000)` tras el click en "Datos de cliente". Es funcional
+  (espera la carga del frame), no debug. Los demás saltos de frame del archivo
+  usan 8000; bajarlo a 8000 alinearía la convención pero no es verificable sin
+  correr contra SAP en vivo, y el flujo de 10s ya está probado.
+- Los dumps de la fase de login (líneas ~110-130, ~330): son código anterior ya
+  verificado y siguen siendo el diagnóstico cuando el login o el campo RUT falla.

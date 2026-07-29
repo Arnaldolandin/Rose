@@ -425,35 +425,6 @@ async def sap_llenar_async(
                     log.warning("No se encontró 'Datos de cliente' en ningún frame")
                 await page.wait_for_timeout(10000)
 
-                # Screenshot post "Datos de cliente"
-                try:
-                    await page.screenshot(path=debug_dir / "sap_datos_cliente.png")
-                    log.info("Screenshot post 'Datos de cliente' guardado")
-                except Exception:
-                    pass
-
-                # Dump todos los inputs visibles para ver qué campos tiene "Datos de cliente"
-                for fr in page.frames:
-                    try:
-                        inputs_dump = await fr.evaluate("""() => {
-                            return Array.from(document.querySelectorAll('input:not([type=hidden]),textarea,select'))
-                                .filter(el => el.offsetParent !== null)
-                                .slice(0, 40)
-                                .map(el => ({
-                                    id: el.id || '',
-                                    name: el.name || '',
-                                    type: el.type || '',
-                                    value: (el.value || '').substring(0, 100),
-                                    placeholder: el.placeholder || '',
-                                }));
-                        }""")
-                        if inputs_dump:
-                            log.info("Inputs post-Datos de cliente (%s):", (fr.url or '')[:60])
-                            for inp in inputs_dump:
-                                log.info("  id=%-40s name=%-30s val=%s", inp["id"][:40], inp["name"][:30], inp["value"][:80])
-                    except Exception:
-                        continue
-
                 # Extraer nombre completo del cliente (Nombre + Apellidos en SAP)
                 nombre_js = """() => {
                     const norm = s => (s||'').replace(/\\s+/g,' ').trim();
@@ -489,35 +460,6 @@ async def sap_llenar_async(
                         break
                 if result.get("nombre_sap") is None:
                     log.warning("No se pudo leer nombre del cliente en SAP")
-
-                # Dump de todos los labels/valores visibles para debug
-                try:
-                    for fr in page.frames:
-                        try:
-                            labels_dump = await fr.evaluate("""() => {
-                                const norm = s => (s||'').replace(/\\s+/g,' ').trim();
-                                const results = [];
-                                for (const el of Array.from(document.querySelectorAll('td,span,label,div'))) {
-                                    const t = norm(el.innerText || '');
-                                    if (!t || t.length < 2 || t.length > 80) continue;
-                                    const td = el.closest('td');
-                                    let val = '';
-                                    if (td && td.nextElementSibling) {
-                                        const inp = td.nextElementSibling.querySelector('input,textarea,select');
-                                        val = inp ? (inp.value||'') : norm(td.nextElementSibling.innerText);
-                                    }
-                                    if (val) results.push(t + ' = ' + val);
-                                }
-                                return results.slice(0, 80);
-                            }""")
-                            if labels_dump:
-                                log.info("Labels post-Datos del Cliente (%s):", (fr.url or '')[:50])
-                                for ld in labels_dump:
-                                    log.info("  %s", ld)
-                        except Exception:
-                            continue
-                except Exception:
-                    pass
 
                 # Extraer email del cliente — buscar en labels, inputs y texto completo
                 email_js = """() => {
