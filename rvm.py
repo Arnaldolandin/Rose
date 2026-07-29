@@ -36,7 +36,12 @@ FOLIO_RE = re.compile(
     re.I,
 )
 CODIGO_VERIF_RE = re.compile(
-    r"(?:C[oó]digo\s+)?[Vv]erificaci[oó]n[:\s]*([A-Za-z0-9]+)",
+    # El `[-–]?` cubre el layout que sale del OCR de certificados escaneados, donde
+    # el código cae en la línea siguiente precedido de un guion:
+    #   "Código Verificación:\n- 88150c1f58f4"
+    # Sin eso, `[:\s]*` frenaba en el guion y la extracción caía a un fallback que
+    # capturaba la palabra "Verificaci" como si fuera el código.
+    r"(?:C[oó]digo\s+)?[Vv]erificaci[oó]n[:\s]*[-–]?\s*([A-Za-z0-9]+)",
     re.I,
 )
 
@@ -117,8 +122,12 @@ def extraer_datos_rvm(texto: str) -> dict:
 
     # Buscar códigos de verificación en el texto con formato "COD:XXXX" o "VERIF:XXXX"
     if not result["codigo_verificacion"]:
+        # El lookahead evita que `[Cc]ódigo[:\s]*` se coma "Código Verificación" y
+        # capture la palabra "Verificaci" (los 10 primeros alfanuméricos, corta en
+        # la "ó") tomándola por el código. Ese rótulo lo maneja CODIGO_VERIF_RE.
         m_alt = re.search(
-            r"(?:COD[.:]\s*|[Vv]erif[.:]\s*|[Cc]ódigo[:\s]*)([A-Za-z0-9]{6,20})",
+            r"(?:COD[.:]\s*|[Vv]erif[.:]\s*|[Cc]ódigo[:\s]*(?![Vv]erificaci))"
+            r"([A-Za-z0-9]{6,20})",
             texto
         )
         if m_alt:

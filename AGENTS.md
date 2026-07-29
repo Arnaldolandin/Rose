@@ -601,3 +601,41 @@ después:  RECHAZADO (Documento vencido (258 días))
 mentir sobre eso, pero no lo arregla. Mientras siga así, **ningún** certificado RVM
 se puede verificar (antes todos salían "no válido" → rechazos falsos en masa; ahora
 todos salen "sin veredicto" → revisión manual). Vale investigarlo aparte.
+
+### 2026-07-07 — RVM: el parseo del código se rompía sobre texto OCR
+
+Encontrado probando el ticket 454517, que logueaba `codigo=Verificaci` — un pedazo
+de la palabra "Verificación", no un código.
+
+Los dos PDFs del ticket son el mismo certificado con layouts distintos:
+
+```
+escaneado (OCR):   FOLIO:600023308517
+                   ... Código Verificación:
+                   - 88150c1f58f4        <- código en la línea siguiente, con "- "
+
+capa de texto:     FOLIO:
+                   88150c1f58f4Código Verificación:600023308517   <- "mangled", ya soportado
+```
+
+Cadena del fallo, en `extraer_datos_rvm`:
+1. `CODIGO_VERIF_RE` usaba `[:\s]*` entre el rótulo y el código. Sobre el layout OCR
+   frenaba en el guion → no matcheaba (`search()` devolvía `None`).
+2. Al no tener código, caía al fallback de prioridad 5, cuya alternativa
+   `[Cc]ódigo[:\s]*` matcheaba **"Código"**, se comía el espacio y capturaba los
+   primeros 10 alfanuméricos de la palabra siguiente: **"Verificaci"** (corta en la
+   "ó", que no está en `[A-Za-z0-9]`).
+
+Arreglos:
+- `CODIGO_VERIF_RE` acepta `[-–]?\s*` antes del código, para el salto de línea con
+  guion del OCR.
+- La prioridad 5 lleva un lookahead `(?![Vv]erificaci)` en la rama `[Cc]ódigo`, para
+  que no se coma el rótulo "Código Verificación" — ese caso es de `CODIGO_VERIF_RE`.
+
+Verificado sobre 6 formatos (los 2 del docstring, los de 454517 y 454523 en sus dos
+variantes, y salto de línea sin guion) y contra los 3 PDFs reales de ambos tickets:
+todos extraen folio y código correctos. Sin regresión en los formatos que ya andaban.
+
+**Nota**: este bug estaba tapado por el de los 204 chars del portal del RC — el
+resultado era "sin veredicto" igual. Son independientes: aun con el portal sano,
+454517 habría fallado por el código mal extraído.
