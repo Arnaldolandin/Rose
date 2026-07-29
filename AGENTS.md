@@ -519,3 +519,42 @@ empaqueta `config.json` (a propósito: permite cambiar credenciales sin
 recompilar), así que hay que copiarlo a mano a `dist/` tras cada cambio. Estaba
 viejo, sin `sap_user`/`sap_password` → el `.exe` fallaba todo SAP con "Faltan
 credenciales SAP". **Acordarse de `cp config.json dist/` al compilar.**
+
+### 2026-07-07 — Adjuntos que el pipeline descartaba en silencio (Autofact)
+
+Probando el ticket 454515 apareció que `extract_file_urls` clasifica como `"otro"`
+todo lo que no termine en `.pdf`/`.jpg`/`.jpeg`/`.png`/`.gif`, y el pipeline solo
+procesa `"pdf"` e `"img"` → el resto se descartaba **sin ningún log**. El ticket
+parecía "sin adjuntos" (la GUI incluso dice "Ticket sin PDFs adjuntos") cuando en
+realidad tenía uno que nadie miró.
+
+- **`bot.py`**: `extract_file_urls` ahora emite un `log.warning` con la cuenta y
+  las URLs de los adjuntos ignorados. Verificado que no mete ruido: en un ticket
+  con 5 adjuntos todos pdf/img no dice nada.
+
+**El hallazgo importante no es el log, es qué había del otro lado.** El adjunto de
+454515 ("Documentos Adicionales") era:
+
+```
+https://docs.transferencias.autofact.cl/weAAhtGSMAIMn-fLKFCzR
+```
+
+`Content-Type: text/html`, 364 bytes — **no es un archivo, es el visor SPA de
+Autofact** (JS que carga el documento aparte). La URL no trae extensión, por eso
+caía en `"otro"`.
+
+Y el subdominio es **`docs.transferencias`**: son documentos de compraventa. O sea
+que el punto ciego cae justo sobre el flujo de transferencia, que es donde más
+lógica hay invertida (`es_transferencia_compraventa`, `extraer_datos_transferencia`,
+cotejo del adquirente, CVE notarial en `notarial.py`). Si Autofact es un canal
+habitual, hay una familia entera de tickets donde no se está mirando el documento
+que más importa.
+
+**Pendiente**: medir qué tan común es (correr el extractor sobre varios desks de
+transferencia y contar cuántos caen en Autofact) antes de decidir si vale
+resolver el visor —bajar el PDF real desde la SPA— o dejarlo a revisión manual.
+
+**Nota de la misma corrida**: el SII tardó **79 s** en la cola Queue-it y salió al
+primer intento. Con un presupuesto de 120 s, eso explica el error intermitente
+"tiempo excedido" en días cargados — y por qué el fix del perfil compartido entre
+reintentos importa: antes cada reintento hacía la fila entera de nuevo.

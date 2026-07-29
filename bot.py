@@ -241,6 +241,16 @@ def extract_file_urls(rsc_text: str) -> list[dict]:
         ext = url.split("?")[0].rsplit(".", 1)[-1].lower() if "." in url else ""
         tipo = "pdf" if ext == "pdf" else "img" if ext in ("jpg", "jpeg", "png", "gif") else "otro"
         files.append({"url": url, "tipo": tipo})
+    # El pipeline solo procesa "pdf" e "img": los "otro" se descartan río abajo.
+    # Sin este aviso el ticket parece "sin adjuntos" cuando en realidad había algo
+    # que nadie miró — ej. links al visor de Autofact (una SPA, no un archivo),
+    # que aparecen como "Documentos Adicionales" y no traen extensión en la URL.
+    otros = [f for f in files if f["tipo"] == "otro"]
+    if otros:
+        log.warning("%s adjunto(s) ignorado(s), no son PDF ni imagen — revisar a mano:",
+                    len(otros))
+        for f in otros:
+            log.warning("  %s", f["url"].split("?")[0][:110])
     return files
 
 
